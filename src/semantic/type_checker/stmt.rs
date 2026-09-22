@@ -1137,7 +1137,8 @@ impl TypeChecker {
                             );
                         }
                         let resolved = self.resolve_type_expr(&p.ty);
-                        if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved) {
+                        if let Some(reason) = super::super::abi::ffi_value_unsafe_reason(&resolved)
+                        {
                             self.push_ffi_unsafe(
                                 format!(
                                     "parameter of `{}` has type `{resolved}`, which cannot cross the FFI boundary",
@@ -1222,7 +1223,8 @@ impl TypeChecker {
                                 "nested C struct fields are not supported by the FFI layout",
                             );
                         }
-                        if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved) {
+                        if let Some(reason) = super::super::abi::ffi_value_unsafe_reason(&resolved)
+                        {
                             self.push_ffi_unsafe(
                                 format!(
                                     "field `{}` of C struct `{}` has type `{resolved}`, which has no C layout",

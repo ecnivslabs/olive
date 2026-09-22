@@ -46,12 +46,25 @@ pub fn ffi_unsafe_reason(ty: &Type) -> Option<&'static str> {
             Some("a Python value is owned by the interpreter and cannot cross to C")
         }
         Type::Param(_) => Some("a generic type parameter has no fixed C layout"),
+        Type::Any => Some("an Any value has no stable C ABI representation"),
+        Type::Never => Some("Never has no runtime C representation"),
         Type::Struct(_, _, false) => Some("an Olive struct has no direct C ABI representation"),
         Type::Bytes => Some("a byte buffer needs an explicit C pointer and length adapter"),
         Type::Ref(_) | Type::MutRef(_) => {
             Some("an Olive reference is not lowered as a C pointer; use `ptr` explicitly")
         }
         _ => None,
+    }
+}
+
+/// Checks types used where a C value must exist, such as parameters and
+/// aggregate fields. `None` is only valid as the return type of a C `void`
+/// function; it cannot occupy an argument register or aggregate byte.
+pub fn ffi_value_unsafe_reason(ty: &Type) -> Option<&'static str> {
+    if matches!(ty, Type::Null) {
+        Some("None has no C ABI representation; use an explicit pointer type")
+    } else {
+        ffi_unsafe_reason(ty)
     }
 }
 
@@ -71,6 +84,9 @@ mod tests {
         assert!(safe(&Type::Str));
         assert!(safe(&Type::Ptr(Box::new(Type::Int))));
         assert!(safe(&Type::Null));
+        assert!(ffi_value_unsafe_reason(&Type::Null).is_some());
+        assert!(!safe(&Type::Any));
+        assert!(!safe(&Type::Never));
     }
 
     #[test]

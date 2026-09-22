@@ -7,6 +7,23 @@ use program::assert_both;
 
 #[cfg(target_os = "linux")]
 #[test]
+fn c_void_return_is_accepted() {
+    assert_both(
+        r#"import "/usr/lib/libc.so.6" as c:
+    fn malloc(size: int) -> *void
+    fn free(p: *void)
+
+fn main():
+    unsafe:
+        let p = c.malloc(1)
+        c.free(p)
+"#,
+        "",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn c_varargs_promote_narrow_int_and_f32() {
     assert_both(
         r#"import "/usr/lib/libc.so.6" as c:
