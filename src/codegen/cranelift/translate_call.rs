@@ -163,6 +163,10 @@ fn emit_vararg_runtime_call<M: Module>(
             ret_code_value,
         ],
     );
+    if let Some(&snap_id) = func_ids.get("__olive_ffi_snapshot_errno") {
+        let snap = module.declare_func_in_func(snap_id, builder.func);
+        builder.ins().call(snap, &[]);
+    }
     let mut result = builder.inst_results(call)[0];
     match entry.and_then(|e| e.ret.as_deref()) {
         Some("f32") => {

@@ -1386,14 +1386,29 @@ impl TypeChecker {
                     return self.apply_subst(Type::Struct(name, type_args, is_ffi));
                 }
 
+                let is_vararg = match &callee.kind {
+                    ExprKind::Identifier(name) => self.vararg_fns.contains(name.as_str()),
+                    ExprKind::Attr { obj, attr } => {
+                        if let ExprKind::Identifier(alias) = &obj.kind {
+                            let mangled = format!("{}::{}", alias, attr);
+                            self.vararg_fns.contains(mangled.as_str())
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+
                 // For a plain function call whose positional arguments line up
                 // one-to-one with the parameters, check each argument against its
                 // parameter type. This lets a collection literal adopt the
                 // parameter's element type, so passing `[Circle(..)]` to a
                 // `[Drawable]` parameter widens the elements to trait objects.
                 let param_hints: Vec<Type> = match (&callee.kind, &resolved_callee) {
-                    (ExprKind::Identifier(_), Type::Fn(params, _, _))
-                        if params.len() == args.len()
+                    (callee_kind, Type::Fn(params, _, _))
+                        if (is_vararg
+                            || (matches!(callee_kind, ExprKind::Identifier(_))
+                                && params.len() == args.len()))
                             && args.iter().all(|a| matches!(a, CallArg::Positional(_))) =>
                     {
                         params.clone()
@@ -1464,7 +1479,8 @@ impl TypeChecker {
                         ret.clone(),
                         args.clone(),
                     );
-                } else if let ExprKind::Attr { obj, .. } = &callee.kind
+                } else if !is_vararg
+                    && let ExprKind::Attr { obj, .. } = &callee.kind
                     && let Type::Fn(params, ret, args) = &resolved_callee
                     && !params.is_empty()
                     && params.len() == arg_types.len() + 1
@@ -1477,21 +1493,65 @@ impl TypeChecker {
                     );
                 }
 
-                let is_vararg = match &callee.kind {
-                    ExprKind::Identifier(name) => self.vararg_fns.contains(name.as_str()),
-                    ExprKind::Attr { obj, attr } => {
-                        if let ExprKind::Identifier(alias) = &obj.kind {
-                            let mangled = format!("{}::{}", alias, attr);
-                            self.vararg_fns.contains(mangled.as_str())
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                };
                 if is_vararg {
+                    if args
+                        .iter()
+                        .any(|arg| !matches!(arg, CallArg::Positional(_)))
+                    {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                "C variadic calls accept positional arguments only",
+                                expr.span,
+                            )
+                            .label("keyword and splat arguments have no C ABI representation")
+                            .help("pass each variadic value in its declared positional order"),
+                        ));
+                    }
                     let ret_ty = self.fresh_var();
-                    if let Type::Fn(_, fn_ret, _) = self.apply_subst(final_callee_ty) {
+                    if let Type::Fn(fixed, fn_ret, _) = self.apply_subst(final_callee_ty) {
+                        if args.len() < fixed.len() {
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0400",
+                                    format!(
+                                        "variadic call expects at least {} arguments, got {}",
+                                        fixed.len(),
+                                        args.len()
+                                    ),
+                                    expr.span,
+                                )
+                                .label("all fixed C parameters are required")
+                                .help("supply every parameter before `...`"),
+                            ));
+                        }
+                        for (param, arg) in fixed.iter().zip(&arg_types) {
+                            self.unify(param, arg, expr.span);
+                        }
+                        for (index, arg) in args.iter().enumerate().skip(fixed.len()) {
+                            let CallArg::Positional(value) = arg else {
+                                continue;
+                            };
+                            let arg_ty = self.apply_subst(arg_types[index].clone());
+                            if let Some(reason) =
+                                super::super::abi::ffi_variadic_arg_unsafe_reason(&arg_ty)
+                            {
+                                self.errors.push(
+                                    super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0404",
+                                            format!(
+                                                "variadic argument {} has type `{arg_ty}`, which cannot cross the C variadic boundary",
+                                                index + 1
+                                            ),
+                                            value.span,
+                                        )
+                                        .label(reason)
+                                        .help("pass a scalar or raw pointer value"),
+                                    ),
+                                );
+                            }
+                        }
                         self.unify(&ret_ty, &fn_ret, expr.span);
                     }
                     self.apply_subst(ret_ty)

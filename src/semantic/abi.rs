@@ -68,6 +68,33 @@ pub fn ffi_value_unsafe_reason(ty: &Type) -> Option<&'static str> {
     }
 }
 
+/// Checks one value in the `...` part of a C variadic declaration or call.
+/// Aggregate lowering has no verified libffi variadic representation.
+pub fn ffi_variadic_arg_unsafe_reason(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::Int
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::Usize
+        | Type::Float
+        | Type::F32
+        | Type::Bool
+        | Type::Str
+        | Type::Ptr(_)
+        | Type::IntegerLiteral(_)
+        | Type::FloatLiteral(_) => None,
+        Type::Struct(_, _, true) => {
+            Some("a C struct has no verified variadic argument representation")
+        }
+        _ => Some("this managed or tagged value has no C variadic argument representation"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +150,31 @@ mod tests {
                 .contains("list")
         );
         assert!(ffi_unsafe_reason(&Type::Int).is_none());
+    }
+
+    #[test]
+    fn variadic_values_are_scalar_or_raw_pointer_only() {
+        for ty in [
+            Type::Int,
+            Type::I8,
+            Type::U64,
+            Type::Usize,
+            Type::F32,
+            Type::Bool,
+            Type::Str,
+            Type::Ptr(Box::new(Type::Int)),
+        ] {
+            assert!(ffi_variadic_arg_unsafe_reason(&ty).is_none(), "{ty}");
+        }
+        for ty in [
+            Type::Any,
+            Type::Null,
+            Type::Union(vec![Type::Int, Type::Null]),
+            Type::List(Box::new(Type::Int)),
+            Type::Struct("S".into(), vec![], true),
+        ] {
+            assert!(ffi_variadic_arg_unsafe_reason(&ty).is_some(), "{ty}");
+        }
     }
 }
 

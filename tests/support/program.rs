@@ -52,6 +52,18 @@ impl Drop for Case {
     }
 }
 
+pub fn assert_compile_fails(source: &str, expected_error: &str) {
+    let case = Case::new(source);
+    let source = case.0.join("main.liv");
+    let pit = env!("CARGO_BIN_EXE_pit");
+    let (status, _, stderr) = case.execute(Command::new(pit).arg("run").arg(&source));
+    assert!(!status.success(), "program compiled unexpectedly");
+    assert!(
+        stderr.contains(expected_error),
+        "missing expected error {expected_error:?} in:\n{stderr}"
+    );
+}
+
 pub fn assert_both(source: &str, expected: &str) {
     assert_both_with(source, |status, stdout, stderr| {
         assert!(status.success(), "program exited {status}: {stderr}");

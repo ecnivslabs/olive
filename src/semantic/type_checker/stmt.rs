@@ -1149,11 +1149,28 @@ impl TypeChecker {
                             );
                         }
                     }
-                    let param_types: Vec<Type> = sig
+                    let resolved_params: Vec<Type> = sig
                         .params
                         .iter()
-                        .map(|p| ffi_type(self.resolve_type_expr(&p.ty)))
+                        .map(|p| self.resolve_type_expr(&p.ty))
                         .collect();
+                    if sig.is_vararg {
+                        for (index, resolved) in resolved_params.iter().enumerate() {
+                            if matches!(resolved, Type::Struct(_, _, true)) {
+                                self.push_ffi_unsafe(
+                                    format!(
+                                        "parameter {} of variadic `{}` has no verified C variadic ABI",
+                                        index + 1,
+                                        sig.name
+                                    ),
+                                    sig.span,
+                                    "C struct arguments in a variadic call are not supported",
+                                );
+                            }
+                        }
+                    }
+                    let param_types: Vec<Type> =
+                        resolved_params.into_iter().map(ffi_type).collect();
                     if let Some(ret_ty) = sig.ret.as_ref()
                         && let Some(reason) = super::super::abi::ffi_type_expr_unsafe_reason(ret_ty)
                     {
@@ -1179,6 +1196,16 @@ impl TypeChecker {
                             ),
                             sig.span,
                             reason,
+                        );
+                    }
+                    if sig.is_vararg && matches!(resolved_ret, Type::Struct(_, _, true)) {
+                        self.push_ffi_unsafe(
+                            format!(
+                                "variadic `{}` returns a C struct, which has no verified variadic return ABI",
+                                sig.name
+                            ),
+                            sig.span,
+                            "C struct returns from variadic functions are not supported",
                         );
                     }
                     let ret_type = ffi_type(resolved_ret);
