@@ -154,12 +154,7 @@ struct File:
             __olive_file_close(self.handle)
 
     fn read(self) -> str:
-        let size = __olive_file_seek(self.handle, 0, 2)
-        if size < 0:
-            return ""
-        if __olive_file_seek(self.handle, 0, 0) < 0:
-            return ""
-        return __olive_file_read_n(self.handle, size)
+        return __olive_file_read_all(self.handle)
 
     fn write(self, data: str) -> bool:
         return __olive_file_write_str(self.handle, data) == 1

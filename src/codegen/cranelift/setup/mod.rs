@@ -243,6 +243,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_file_exists", &sig_i64_i64),
             ("__olive_file_open", &sig_i64_i64_i64),
             ("__olive_file_read", &sig_i64_i64),
+            ("__olive_file_read_all", &sig_i64_i64),
             ("__olive_file_read_lines", &sig_i64_i64),
             ("__olive_file_read_n", &sig_i64_i64_i64),
             ("__olive_file_rename", &sig_i64_i64_i64),

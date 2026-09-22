@@ -173,7 +173,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 720] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 721] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_check_method",
@@ -351,6 +351,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 720] = [
     "__olive_file_exists",
     "__olive_file_open",
     "__olive_file_read",
+    "__olive_file_read_all",
     "__olive_file_read_lines",
     "__olive_file_read_n",
     "__olive_file_rename",

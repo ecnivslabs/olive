@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
@@ -61,6 +63,37 @@ pub fn assert_compile_fails(source: &str, expected_error: &str) {
     assert!(
         stderr.contains(expected_error),
         "missing expected error {expected_error:?} in:\n{stderr}"
+    );
+}
+
+pub fn assert_fault_both(source: &str, code: &str, expected_error: &str) {
+    let case = Case::new(source);
+    let source_path = case.0.join("main.liv");
+    let pit = env!("CARGO_BIN_EXE_pit");
+    let (status, _, stderr) = case.execute(Command::new(pit).arg("run").arg(&source_path));
+    assert_eq!(status.code(), Some(1), "program exited {status}: {stderr}");
+    assert!(stderr.contains(code), "missing fault code in:\n{stderr}");
+    assert!(
+        stderr.contains(expected_error),
+        "missing fault text in:\n{stderr}"
+    );
+
+    let binary = case.0.join(format!("main{}", std::env::consts::EXE_SUFFIX));
+    let (status, _, stderr) = case.execute(
+        Command::new(pit)
+            .arg("build")
+            .arg("--release")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary),
+    );
+    assert!(status.success(), "build exited {status}: {stderr}");
+    let (status, _, stderr) = case.execute(&mut Command::new(&binary));
+    assert_eq!(status.code(), Some(1), "program exited {status}: {stderr}");
+    assert!(stderr.contains(code), "missing fault code in:\n{stderr}");
+    assert!(
+        stderr.contains(expected_error),
+        "missing fault text in:\n{stderr}"
     );
 }
 

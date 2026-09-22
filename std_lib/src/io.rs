@@ -805,20 +805,19 @@ fn with_file<R>(handle: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<
     }
 }
 
-/// Reads up to `n` bytes. Distinguishes the three outcomes the ""-only
-/// contract cannot carry: a dead/foreign handle returns null, an I/O error
-/// returns 1, and a successful read (EOF included) returns the string.
+/// Reads up to `n` bytes. Returns null for a dead or foreign handle, a
+/// negative or oversized request, or an I/O error. A successful read,
+/// including EOF and a zero-byte read from a live handle, returns a string.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_read_n(handle: i64, n: i64) -> i64 {
-    if handle == 0 || n <= 0 {
-        return if handle == 0 {
-            0
-        } else {
-            olive_str_internal("")
-        };
+    if handle == 0 || n < 0 || n > MAX_READ_BYTES as i64 {
+        return 0;
     }
-    if n > MAX_READ_BYTES as i64 {
-        return 1;
+    if n == 0 {
+        return match with_file(handle, |_| ()) {
+            Some(()) => olive_str_internal(""),
+            None => 0,
+        };
     }
     let want = n as usize;
     let mut buf = vec![0u8; want];
@@ -838,9 +837,40 @@ pub extern "C" fn olive_file_read_n(handle: i64, n: i64) -> i64 {
             let s = String::from_utf8_lossy(&buf).into_owned();
             olive_str_internal(&s)
         }
-        Some(Err(())) => 1,
-        None => 0,
+        Some(Err(())) | None => 0,
     }
+}
+
+/// Reads one live file handle from its current position after rewinding it.
+/// Errors abort with a controlled runtime fault instead of leaking a status
+/// word through the public `str` return ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_file_read_all(handle: i64) -> i64 {
+    if handle == 0 {
+        crate::panic::abort("cannot read from a closed file", None);
+    }
+    let size = match with_file(handle, |file| file.seek(SeekFrom::End(0))) {
+        Some(Ok(size)) => match i64::try_from(size) {
+            Ok(size) => size,
+            Err(_) => crate::panic::abort("file is too large to read", None),
+        },
+        Some(Err(_)) => crate::panic::abort("cannot determine file size", None),
+        None => crate::panic::abort("cannot read from a closed file", None),
+    };
+    if size > MAX_READ_BYTES as i64 {
+        crate::panic::abort("file exceeds the maximum readable size", None);
+    }
+    if !matches!(
+        with_file(handle, |file| file.seek(SeekFrom::Start(0))),
+        Some(Ok(0))
+    ) {
+        crate::panic::abort("cannot rewind file before reading", None);
+    }
+    let data = olive_file_read_n(handle, size);
+    if data == 0 {
+        crate::panic::abort("file read failed", None);
+    }
+    data
 }
 
 const MAX_READ_BYTES: usize = 1 << 30;
@@ -1242,18 +1272,18 @@ mod tests {
     }
 
     #[test]
-    fn read_n_non_positive_returns_empty_without_reading() {
+    fn read_n_zero_returns_empty_and_negative_returns_null() {
         let path = temp_path("olive_read_n_non_positive.txt");
         olive_file_write(path, make_str("content"));
         let handle = olive_file_open(path, make_str("r"));
         let empty = olive_file_read_n(handle, 0);
         let negative = olive_file_read_n(handle, -1);
         assert!(empty > 1);
-        assert!(negative > 1);
+        assert_eq!(negative, 0);
         assert_eq!(from_ptr(empty), "");
-        assert_eq!(from_ptr(negative), "");
         assert_eq!(olive_file_tell(handle), 0);
         olive_file_close(handle);
+        assert_eq!(olive_file_read_n(handle, 0), 0);
         olive_file_delete(path);
     }
 
@@ -1262,10 +1292,20 @@ mod tests {
         let path = temp_path("olive_read_n_oversized.txt");
         olive_file_write(path, make_str("content"));
         let handle = olive_file_open(path, make_str("r"));
-        assert_eq!(olive_file_read_n(handle, (MAX_READ_BYTES as i64) + 1), 1);
+        assert_eq!(olive_file_read_n(handle, (MAX_READ_BYTES as i64) + 1), 0);
         assert_eq!(olive_file_tell(handle), 0);
         olive_file_close(handle);
         olive_file_delete(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_n_directory_error_returns_null() {
+        let path = make_str(&std::env::temp_dir().to_string_lossy());
+        let handle = olive_file_open(path, make_str("r"));
+        assert_ne!(handle, 0);
+        assert_eq!(olive_file_read_n(handle, 1), 0);
+        olive_file_close(handle);
     }
 
     #[test]

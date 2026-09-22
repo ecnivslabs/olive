@@ -241,6 +241,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_file_exists", b"olive_file_exists\0"),
     ("__olive_file_open", b"olive_file_open\0"),
     ("__olive_file_read", b"olive_file_read\0"),
+    ("__olive_file_read_all", b"olive_file_read_all\0"),
     ("__olive_file_read_lines", b"olive_file_read_lines\0"),
     ("__olive_file_read_n", b"olive_file_read_n\0"),
     ("__olive_file_rename", b"olive_file_rename\0"),
