@@ -18,6 +18,7 @@ struct OliveTask {
     queued: AtomicBool,
     done: AtomicBool,
     retired: AtomicBool,
+    handle_pins: AtomicUsize,
     pending_child: Mutex<Option<Arc<OliveTask>>>,
     completions: Mutex<Vec<Arc<Completion>>>,
     sm_waiters: Mutex<Vec<Arc<OliveTask>>>,
@@ -68,6 +69,7 @@ struct OliveExecutor {
     ready: Mutex<VecDeque<Arc<OliveTask>>>,
     wakeup: Condvar,
     task_map: Mutex<std::collections::HashMap<i64, Arc<OliveTask>>>,
+    completed_tasks: Mutex<std::collections::HashMap<i64, Arc<OliveTask>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -85,6 +87,7 @@ fn olive_executor() -> &'static Arc<OliveExecutor> {
             ready: Mutex::new(VecDeque::new()),
             wakeup: Condvar::new(),
             task_map: Mutex::new(std::collections::HashMap::new()),
+            completed_tasks: Mutex::new(std::collections::HashMap::new()),
         });
         // One worker per CPU. Workers block in `poll_fn` while a machine runs
         // and park on `wakeup` otherwise, so this is the concurrency ceiling
@@ -118,7 +121,9 @@ fn executor_worker(ex: Arc<OliveExecutor>) {
         }
         let completed_child = task.pending_child.lock().unwrap().take();
         if let Some(completed_child) = completed_child {
-            executor_complete_waker(&ex, &task, completed_child);
+            if executor_complete_waker(&ex, &task, completed_child.clone()) {
+                release_child_pin(&ex, &completed_child);
+            }
         } else {
             match executor_drive(&ex, &task) {
                 DriveOutcome::Completed | DriveOutcome::Parked => {}
@@ -159,6 +164,7 @@ fn executor_get_or_create_task_locked(
         queued: AtomicBool::new(false),
         done: AtomicBool::new(false),
         retired: AtomicBool::new(false),
+        handle_pins: AtomicUsize::new(0),
         pending_child: Mutex::new(None),
         completions: Mutex::new(Vec::new()),
         sm_waiters: Mutex::new(Vec::new()),
@@ -166,6 +172,38 @@ fn executor_get_or_create_task_locked(
     });
     map.insert(sm_future_ptr, t.clone());
     t
+}
+
+fn maybe_remove_retired_task(ex: &OliveExecutor, task: &Arc<OliveTask>) {
+    if !task.retired.load(Ordering::Acquire) || task.handle_pins.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let removed = {
+        let mut completed = ex.completed_tasks.lock().unwrap();
+        if completed
+            .get(&task.sm_future)
+            .is_some_and(|current| Arc::ptr_eq(current, task))
+        {
+            completed.remove(&task.sm_future)
+        } else {
+            None
+        }
+    };
+    drop(removed);
+}
+
+fn install_pending_child(parent: &Arc<OliveTask>, child: &Arc<OliveTask>) {
+    let mut slot = parent.pending_child.lock().unwrap();
+    if slot.is_none() {
+        child.handle_pins.fetch_add(1, Ordering::AcqRel);
+        *slot = Some(child.clone());
+    }
+}
+
+fn release_child_pin(ex: &OliveExecutor, child: &Arc<OliveTask>) {
+    if child.handle_pins.fetch_sub(1, Ordering::AcqRel) == 1 {
+        maybe_remove_retired_task(ex, child);
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +244,9 @@ fn task_cancelled(task: &Arc<OliveTask>) -> bool {
 
 fn complete_cancelled(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcome {
     unregister_from_child(ex, task);
+    if let Some(child) = task.pending_child.lock().unwrap().take() {
+        release_child_pin(ex, &child);
+    }
     let frame = unsafe { &*(task.sm_future as *const OliveSmFuture) }.frame;
     if frame != 0 {
         unsafe {
@@ -260,17 +301,17 @@ fn executor_complete_waker(
     ex: &Arc<OliveExecutor>,
     task: &Arc<OliveTask>,
     completed_child: Arc<OliveTask>,
-) {
+) -> bool {
     let Some(_poll_guard) = try_acquire_sm_poll(task.sm_future) else {
         // Mid-poll elsewhere; restore and let that poll's worker pick it up
         // on its next dequeue.
-        *task.pending_child.lock().unwrap() = Some(completed_child);
-        return;
+        install_pending_child(task, &completed_child);
+        return false;
     };
 
     if task_cancelled(task) {
         complete_cancelled(ex, task);
-        return;
+        return true;
     }
 
     let slabs_ptr = {
@@ -290,12 +331,13 @@ fn executor_complete_waker(
     crate::slab::ACTIVE_SLABS.set(old_active);
     if unsafe { *(sf.frame as *const i64) } == -1 {
         executor_complete(ex, task, final_result);
-        return;
+        return true;
     }
     let outcome = park_after_pending(ex, task, sf);
     if task.pending_child.lock().unwrap().is_some() || matches!(outcome, DriveOutcome::Rerun) {
         executor_enqueue(ex, task);
     }
+    true
 }
 
 fn wait_for_plain_child(task: &Arc<OliveTask>, shared: &FutureShared) -> bool {
@@ -336,7 +378,7 @@ fn park_combinator_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, child_p
                 return false;
             }
             if child.pending_child.lock().unwrap().take().is_some() {
-                *task.pending_child.lock().unwrap() = Some(child.clone());
+                install_pending_child(task, &child);
                 return false;
             }
             let mut waiters = child.sm_waiters.lock().unwrap();
@@ -428,7 +470,7 @@ fn park_after_pending(
             };
             // Already finished but its wakeup has not been consumed yet.
             if sub_task.pending_child.lock().unwrap().take().is_some() {
-                *task.pending_child.lock().unwrap() = Some(sub_task.clone());
+                install_pending_child(task, &sub_task);
                 return DriveOutcome::Rerun;
             }
             // Check-and-push under the waiters lock, mirrored by the done
@@ -536,6 +578,7 @@ fn executor_publish(
     let frame = sf.frame;
     let future_ptr = task.sm_future;
     let mut map = ex.task_map.lock().unwrap();
+    let mut completed = ex.completed_tasks.lock().unwrap();
     unsafe {
         let f = &mut *(future_ptr as *mut OliveSmFuture);
         f.cached = delivered;
@@ -561,14 +604,19 @@ fn executor_publish(
         let waiters = std::mem::take(&mut *guard);
         drop(guard);
         map.remove(&task.sm_future);
+        if task.retired.load(Ordering::Acquire) || !waiters.is_empty() {
+            completed.insert(task.sm_future, task.clone());
+        }
         waiters
     };
+    drop(completed);
     drop(map);
     *task.slabs.lock().unwrap() = None;
     for w in waiters {
-        *w.pending_child.lock().unwrap() = Some(task.clone());
+        install_pending_child(&w, task);
         executor_enqueue(ex, &w);
     }
+    maybe_remove_retired_task(ex, task);
     DriveOutcome::Completed
 }
 
@@ -923,9 +971,12 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
     }
     let kind = unsafe { *(future as *const i64) };
     if kind == KIND_SM_FUTURE {
-        let task = EXECUTOR
-            .get()
-            .and_then(|ex| ex.task_map.lock().unwrap().get(&future).cloned());
+        let task = EXECUTOR.get().and_then(|ex| {
+            if let Some(task) = ex.task_map.lock().unwrap().get(&future).cloned() {
+                return Some(task);
+            }
+            ex.completed_tasks.lock().unwrap().get(&future).cloned()
+        });
         if let (Some(ex), Some(task)) = (EXECUTOR.get(), task) {
             task.retired.store(true, Ordering::Release);
             unsafe {
@@ -933,7 +984,11 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
                     .cancelled
                     .store(1, Ordering::Release);
             }
-            executor_enqueue(ex, &task);
+            if task.done.load(Ordering::Acquire) {
+                maybe_remove_retired_task(ex, &task);
+            } else {
+                executor_enqueue(ex, &task);
+            }
             return 0;
         }
 

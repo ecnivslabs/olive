@@ -13,6 +13,7 @@ fn check_child_lifetime(state: ChildState) {
         ready: Mutex::new(VecDeque::new()),
         wakeup: Condvar::new(),
         task_map: Mutex::new(std::collections::HashMap::new()),
+        completed_tasks: Mutex::new(std::collections::HashMap::new()),
     });
     let mut child_frame = [0i64; 2];
     let child_future = OliveSmFuture {
@@ -98,6 +99,74 @@ fn finished_child_releases_temporary_reference() {
 #[test]
 fn duplicate_waiter_releases_temporary_reference() {
     check_child_lifetime(ChildState::Registered);
+}
+
+#[test]
+fn freed_completed_child_survives_until_parent_consumes_it() {
+    let ex = Arc::new(OliveExecutor {
+        ready: Mutex::new(VecDeque::new()),
+        wakeup: Condvar::new(),
+        task_map: Mutex::new(std::collections::HashMap::new()),
+        completed_tasks: Mutex::new(std::collections::HashMap::new()),
+    });
+    let mut child_frame = [0i64; 2];
+    let child_future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: 0,
+        frame: child_frame.as_mut_ptr() as i64,
+        cancelled: AtomicI64::new(0),
+        result_desc: [crate::format::D_INT].as_ptr() as i64,
+        frame_size: 16,
+        cached: 0,
+        terminal: AtomicBool::new(false),
+        poll_lock: AtomicBool::new(false),
+    };
+    let mut parent_frame = [0, &child_future as *const OliveSmFuture as i64];
+    let parent_future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: 0,
+        frame: parent_frame.as_mut_ptr() as i64,
+        cancelled: AtomicI64::new(0),
+        result_desc: [crate::format::D_INT].as_ptr() as i64,
+        frame_size: 16,
+        cached: 0,
+        terminal: AtomicBool::new(false),
+        poll_lock: AtomicBool::new(false),
+    };
+    let parent = executor_get_or_create_task(&ex, &parent_future as *const OliveSmFuture as i64);
+    let child = executor_get_or_create_task(&ex, &child_future as *const OliveSmFuture as i64);
+    let weak_child = Arc::downgrade(&child);
+
+    assert!(park_after_pending(&ex, &parent, &parent_future) == DriveOutcome::Parked);
+    assert!(executor_complete(&ex, &child, 42) == DriveOutcome::Completed);
+    let pinned = parent.pending_child.lock().unwrap().take().unwrap();
+    assert!(Arc::ptr_eq(&pinned, &child));
+
+    // Another owner frees the completed child before the parent polls it.
+    child.retired.store(true, Ordering::SeqCst);
+    maybe_remove_retired_task(&ex, &child);
+    assert!(
+        ex.completed_tasks
+            .lock()
+            .unwrap()
+            .contains_key(&child.sm_future),
+        "pinned completed handle must not be released early"
+    );
+    assert!(weak_child.upgrade().is_some());
+
+    // Parent consumes the handoff; the pin release reclaims the handle.
+    release_child_pin(&ex, &pinned);
+    assert!(
+        !ex.completed_tasks
+            .lock()
+            .unwrap()
+            .contains_key(&child.sm_future)
+    );
+    drop(pinned);
+    drop(parent);
+    drop(child);
+    drop(ex);
+    assert!(weak_child.upgrade().is_none(), "child task was leaked");
 }
 
 extern "C" fn make_bytes(_: *const i64) -> i64 {
@@ -193,6 +262,7 @@ fn completed_state_machine_releases_the_original_escape_allocation() {
         ready: Mutex::new(VecDeque::new()),
         wakeup: Condvar::new(),
         task_map: Mutex::new(std::collections::HashMap::new()),
+        completed_tasks: Mutex::new(std::collections::HashMap::new()),
     });
     let task = executor_get_or_create_task(&ex, &future as *const OliveSmFuture as i64);
     assert!(executor_complete(&ex, &task, original) == DriveOutcome::Completed);
@@ -560,6 +630,7 @@ fn test_executor() -> Arc<OliveExecutor> {
         ready: Mutex::new(VecDeque::new()),
         wakeup: Condvar::new(),
         task_map: Mutex::new(std::collections::HashMap::new()),
+        completed_tasks: Mutex::new(std::collections::HashMap::new()),
     })
 }
 

@@ -1,11 +1,74 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 const DEFAULT_REGISTRY: &str = "https://raw.githubusercontent.com/ecnivslabs/pit-registry/master";
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_URL_BYTES: usize = 8 * 1024;
+const MAX_CHECKSUM_BYTES: usize = 64;
+const MAX_FIELD_BYTES: usize = 4096;
+
+pub(crate) fn validate_checksum(value: &str, label: &str) -> Result<(), String> {
+    if value.len() != MAX_CHECKSUM_BYTES || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "invalid {label}: expected a 64-character hexadecimal BLAKE3 digest"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn checksums_equal(left: &str, right: &str) -> bool {
+    left.len() == right.len() && left.eq_ignore_ascii_case(right)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
+pub(crate) fn validate_http_url(value: &str, label: &str) -> Result<reqwest::Url, String> {
+    if value.is_empty() || value.len() > MAX_URL_BYTES || value.chars().any(char::is_control) {
+        return Err(format!(
+            "invalid {label}: URL has an invalid length or control character"
+        ));
+    }
+    let url = reqwest::Url::parse(value).map_err(|error| format!("invalid {label}: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "invalid {label}: only HTTP and HTTPS URLs are supported"
+        ));
+    }
+    let Some(host) = url.host_str() else {
+        return Err(format!("invalid {label}: URL has no host"));
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!("invalid {label}: URL credentials are not allowed"));
+    }
+    if url.fragment().is_some() {
+        return Err(format!("invalid {label}: URL fragments are not allowed"));
+    }
+    if url.scheme() == "http" && !is_loopback_host(host) {
+        return Err(format!(
+            "invalid {label}: HTTP is allowed only for loopback development URLs"
+        ));
+    }
+    Ok(url)
+}
+
+pub(crate) fn validate_field(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > MAX_FIELD_BYTES || value.chars().any(char::is_control) {
+        return Err(format!(
+            "invalid {label}: value has an invalid length or control character"
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct PitConfig {
@@ -17,13 +80,43 @@ struct RegistryConfig {
     url: Option<String>,
 }
 
-fn get_registry_base() -> String {
-    let config_path = dirs::home_dir()
-        .expect("no home dir")
-        .join(".pit")
-        .join("config.toml");
+fn read_bounded_file(path: &std::path::Path, limit: usize, label: &str) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot stat {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("{label} {} must not be a symlink", path.display()));
+    }
+    if !metadata.is_file() {
+        return Err(format!("{label} {} is not a regular file", path.display()));
+    }
+    if metadata.len() > limit as u64 {
+        return Err(format!(
+            "{label} {} exceeds the {limit} byte limit",
+            path.display()
+        ));
+    }
+    let file = fs::File::open(path)
+        .map_err(|error| format!("cannot open {label} {}: {error}", path.display()))?;
+    let mut data = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut data)
+        .map_err(|error| format!("cannot read {label} {}: {error}", path.display()))?;
+    if data.len() > limit {
+        return Err(format!(
+            "{label} {} exceeds the {limit} byte limit",
+            path.display()
+        ));
+    }
+    Ok(data)
+}
 
-    let configured = if let Ok(content) = fs::read_to_string(config_path)
+fn get_registry_base() -> Result<String, String> {
+    let home = dirs::home_dir().ok_or_else(|| "cannot determine home directory".to_string())?;
+    let config_path = home.join(".pit").join("config.toml");
+
+    let configured = if let Ok(content) =
+        read_bounded_file(&config_path, 64 * 1024, "registry config")
+        && let Ok(content) = String::from_utf8(content)
         && let Ok(config) = toml::from_str::<PitConfig>(&content)
         && let Some(reg) = config.registry
         && let Some(url) = reg.url
@@ -32,7 +125,21 @@ fn get_registry_base() -> String {
     } else {
         DEFAULT_REGISTRY.to_string()
     };
-    configured.trim_end_matches('/').to_string()
+    let parsed = validate_http_url(&configured, "registry URL")?;
+    if parsed.query().is_some() {
+        return Err("registry URL must not contain a query string".to_string());
+    }
+    if parsed.path().split('/').any(|segment| segment == "..") {
+        return Err("registry URL must not contain parent path segments".to_string());
+    }
+    let mut normalized = parsed.to_string();
+    while normalized.ends_with('/') {
+        normalized.pop();
+    }
+    if normalized.is_empty() {
+        return Err("registry URL must not be empty".to_string());
+    }
+    Ok(normalized)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,7 +272,7 @@ fn validate_pod_version(version: &PodVersion) -> Result<(), String> {
 fn registry_url(name: &str) -> Result<String, String> {
     validate_pod_name(name)?;
     let prefix = name.chars().take(2).collect::<String>();
-    let base = get_registry_base();
+    let base = get_registry_base()?;
     Ok(format!("{}/{}/{}", base, prefix, name))
 }
 
@@ -190,7 +297,7 @@ fn legacy_cache_path(name: &str) -> PathBuf {
 
 fn read_cached(name: &str) -> Result<String, String> {
     let path = cache_path(name);
-    let expected = get_registry_base();
+    let expected = get_registry_base()?;
     let content = match fs::read(&path) {
         Ok(content) => content,
         Err(error) => {
@@ -208,6 +315,7 @@ fn read_cached(name: &str) -> Result<String, String> {
     };
     let cache: RegistryCache = serde_json::from_slice(&content)
         .map_err(|error| format!("invalid registry cache {}: {error}", path.display()))?;
+    validate_field(&cache.registry, "registry identity")?;
     if cache.registry != expected {
         return Err(format!(
             "registry cache for '{name}' belongs to {}, not {expected}",
@@ -225,7 +333,7 @@ fn write_cached(name: &str, body: &str) -> Result<(), String> {
     fs::create_dir_all(parent)
         .map_err(|error| format!("cannot create registry cache directory: {error}"))?;
     let encoded = serde_json::to_vec(&RegistryCache {
-        registry: get_registry_base(),
+        registry: get_registry_base()?,
         body: body.to_string(),
     })
     .map_err(|error| error.to_string())?;

@@ -84,13 +84,17 @@ pub async fn ensure_deps_installed(
 
     let mut futures = Vec::new();
     for pod in &resolved_pods {
-        if let Some(locked_cksum) = locked_archives.get(&pod.name)
-            && locked_cksum != &pod.cksum
-        {
-            return Err(PodError::Lockfile(format!(
-                "registry archive for {}@{} changed checksum (locked {}, found {})",
-                pod.name, pod.vers, locked_cksum, pod.cksum
-            )));
+        if let Some(locked_cksum) = locked_archives.get(&pod.name) {
+            crate::tooling::registry::validate_checksum(locked_cksum, "locked archive checksum")
+                .map_err(PodError::Lockfile)?;
+            crate::tooling::registry::validate_checksum(&pod.cksum, "registry archive checksum")
+                .map_err(PodError::Lockfile)?;
+            if !crate::tooling::registry::checksums_equal(locked_cksum, &pod.cksum) {
+                return Err(PodError::Lockfile(format!(
+                    "registry archive for {}@{} changed checksum (locked {}, found {})",
+                    pod.name, pod.vers, locked_cksum, pod.cksum
+                )));
+            }
         }
         let final_dir = installed_path(&pod.name, &pod.vers);
         let locked = locked_native.get(&pod.name);
