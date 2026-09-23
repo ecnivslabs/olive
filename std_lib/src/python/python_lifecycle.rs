@@ -300,6 +300,12 @@ pub extern "C" fn olive_py_initialize() {
         PY_OBJECT_RICHCOMPAREBOOL = compat_dlsym(handle, "PyObject_RichCompareBool");
         PY_SLICE_NEW = compat_dlsym(handle, "PySlice_New");
         PY_CORO_CHECK_EXACT = compat_dlsym(handle, "PyCoro_CheckExact");
+        let coro_type_slot: *const PyObject = compat_dlsym(handle, "PyCoro_Type");
+        PY_CORO_TYPE = if coro_type_slot.is_null() {
+            std::ptr::null_mut()
+        } else {
+            *coro_type_slot
+        };
         PY_ITER_CHECK = compat_dlsym(handle, "PyIter_Check");
         PY_VECTORCALL = compat_dlsym(handle, "PyObject_Vectorcall");
         PY_VECTORCALL_METHOD = compat_dlsym(handle, "PyObject_VectorcallMethod");
@@ -650,6 +656,7 @@ pub extern "C" fn olive_py_initialize() {
                 MAIN_THREAD_STATE = PY_EVAL_SAVE_THREAD();
             }
         }
+        OWNS_FINALIZATION.store(!already_initialized, Ordering::SeqCst);
         INITIALIZED.store(true, Ordering::SeqCst);
     });
 }
@@ -675,8 +682,10 @@ pub extern "C" fn olive_py_finalize() {
                 PY_DEC_REF(PY_TRACEBACK_FORMAT_EXCEPTION);
                 PY_TRACEBACK_FORMAT_EXCEPTION = std::ptr::null_mut();
             }
-            PY_FINALIZE();
-
+            if OWNS_FINALIZATION.load(Ordering::SeqCst) {
+                PY_FINALIZE();
+            }
+            OWNS_FINALIZATION.store(false, Ordering::SeqCst);
             INITIALIZED.store(false, Ordering::SeqCst);
         }
     }

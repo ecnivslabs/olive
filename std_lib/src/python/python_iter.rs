@@ -27,8 +27,10 @@ pub extern "C" fn olive_py_iter_next(iter: PyObject) -> i64 {
     with_gil(|| unsafe {
         let item = PY_ITER_NEXT(unwrapped);
         if item.is_null() {
-            PY_ERR_CLEAR();
-            return 0;
+            if PY_ERR_OCCURRED().is_null() {
+                return 0;
+            }
+            handle_py_error();
         }
         let val = py_to_olive_internal(item);
         PY_DEC_REF(item);

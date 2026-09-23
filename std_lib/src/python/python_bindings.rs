@@ -3,6 +3,7 @@ use std::os::raw::{c_char, c_double, c_int, c_long, c_void};
 use std::sync::atomic::AtomicBool;
 
 pub static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static OWNS_FINALIZATION: AtomicBool = AtomicBool::new(false);
 pub static mut LIBPYTHON: *mut c_void = std::ptr::null_mut();
 
 pub static mut PY_INITIALIZE: unsafe extern "C" fn() = noop_initialize;
@@ -176,6 +177,7 @@ pub static mut PY_SYS_GET_OBJECT: unsafe extern "C" fn(*const c_char) -> PyObjec
 pub static mut PY_OBJECT_GET_ITER: unsafe extern "C" fn(PyObject) -> PyObject = noop_get_iter;
 pub static mut PY_ITER_NEXT: unsafe extern "C" fn(PyObject) -> PyObject = noop_iter_next;
 pub static mut PY_CORO_CHECK_EXACT: unsafe extern "C" fn(PyObject) -> c_int = noop_check_int;
+pub static mut PY_CORO_TYPE: PyObject = std::ptr::null_mut();
 pub static mut PY_ITER_CHECK: unsafe extern "C" fn(PyObject) -> c_int = noop_check_int;
 
 pub static mut PY_TRACEBACK_FORMAT_EXCEPTION: PyObject = std::ptr::null_mut();
@@ -379,6 +381,7 @@ pub struct PyStatus {
     pub _type: c_int,
     pub _func: *const c_char,
     pub _err_msg: *const c_char,
+    pub exitcode: c_int,
 }
 
 pub const PY_STATUS_OK: c_int = 0;
@@ -407,3 +410,15 @@ pub static mut PY_INTERPRETER_STATE_GET: unsafe extern "C" fn() -> *mut c_void =
     crate::python::python_noop::noop_interpreter_state_get;
 pub static mut PY_THREAD_STATE_GET: unsafe extern "C" fn() -> *mut c_void =
     crate::python::python_noop::noop_thread_state_get;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn py_status_matches_64_bit_c_layout() {
+        assert_eq!(std::mem::size_of::<PyStatus>(), 32);
+        assert_eq!(std::mem::align_of::<PyStatus>(), 8);
+    }
+}

@@ -1080,11 +1080,16 @@ pub unsafe fn olive_py_to_list_tagged_internal(obj: PyObject, elem_tag: i64, box
         };
         let from_real_list = is_list || !materialized.is_null();
 
-        let len = if source == obj {
-            PY_OBJECT_LENGTH(obj) as usize
+        let raw_len = if source == obj {
+            PY_OBJECT_LENGTH(obj)
         } else {
-            PY_OBJECT_LENGTH(source) as usize
+            PY_OBJECT_LENGTH(source)
         };
+        if raw_len < 0 {
+            crate::python::python_error::handle_py_error();
+        }
+        let len = usize::try_from(raw_len)
+            .unwrap_or_else(|_| crate::panic::abort("Python sequence is too large", None));
         let list_ptr = crate::olive_list_new(len as i64);
         if len > 0 {
             let sv = &mut *(list_ptr as *mut crate::StableVec);

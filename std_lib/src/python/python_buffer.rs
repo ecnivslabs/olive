@@ -179,7 +179,7 @@ pub(crate) fn buffer_to_bytes(obj: PyObject) -> i64 {
     if !HAS_BUFFER.load(Ordering::Relaxed) {
         return 0;
     }
-    unsafe {
+    with_gil(|| unsafe {
         with_buffer(obj, |view| {
             let Some(len) = eligible_len(view) else {
                 return 0;
@@ -190,7 +190,7 @@ pub(crate) fn buffer_to_bytes(obj: PyObject) -> i64 {
             let data = std::slice::from_raw_parts(view.buf as *const u8, len).to_vec();
             crate::bytes::new_buf(data)
         })
-    }
+    })
 }
 
 #[cfg(test)]

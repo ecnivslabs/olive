@@ -137,7 +137,12 @@ pub(crate) unsafe fn raw_py_to_int(raw: PyObject) -> i64 {
         // directly instead of allocating a second long via PY_NUMBER_LONG
         // (one alloc + one free per call) just to read the same value back.
         if python_coerce::raw_ob_type(raw) == PY_LONG_TYPE {
-            return py_long_as_i64(raw);
+            let result = py_long_as_i64(raw);
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+                crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
+            }
+            return result;
         }
         let int_obj = PY_NUMBER_LONG(raw);
         if int_obj.is_null() {

@@ -238,6 +238,7 @@ pub unsafe extern "C" fn noop_new_interpreter(
 ) -> crate::python::python_bindings::PyStatus {
     crate::python::python_bindings::PyStatus {
         _type: -1,
+        exitcode: 0,
         _func: std::ptr::null(),
         _err_msg: std::ptr::null(),
     }

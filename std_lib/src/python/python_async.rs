@@ -9,11 +9,16 @@ pub extern "C" fn olive_py_is_coroutine(obj: PyObject) -> i64 {
         return 0;
     }
     with_gil(|| unsafe {
-        if PY_CORO_CHECK_EXACT(unwrapped) != 0 {
-            1
-        } else {
-            0
+        if PY_CORO_TYPE.is_null() {
+            return 0;
         }
+        let object_type = PY_OBJECT_TYPE(unwrapped);
+        if object_type.is_null() {
+            return 0;
+        }
+        let exact = object_type == PY_CORO_TYPE;
+        PY_DEC_REF(object_type);
+        i64::from(exact)
     })
 }
 

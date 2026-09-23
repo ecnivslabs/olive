@@ -24,7 +24,7 @@ const PY_INTERPRETER_CONFIG_OWN_GIL: c_int = 2;
 thread_local! {
     static SUBINTERP_SLOT: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static SUBINTERP_TS: std::cell::Cell<*mut c_void> = const { std::cell::Cell::new(std::ptr::null_mut()) };
-    static SUBINTERP_BORROWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SUBINTERP_BORROWED_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 unsafe fn interp_state_raw() -> *mut *mut c_void {
@@ -67,14 +67,14 @@ pub(crate) struct ExternalCallbackGuard;
 
 impl ExternalCallbackGuard {
     pub(crate) fn enter() -> Self {
-        SUBINTERP_BORROWED.with(|borrowed| borrowed.set(true));
+        SUBINTERP_BORROWED_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
         Self
     }
 }
 
 impl Drop for ExternalCallbackGuard {
     fn drop(&mut self) {
-        SUBINTERP_BORROWED.with(|borrowed| borrowed.set(false));
+        SUBINTERP_BORROWED_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
     }
 }
 
@@ -104,7 +104,7 @@ fn assign_slot() -> i32 {
 
 pub unsafe fn pool_ensure() -> bool {
     unsafe {
-        if SUBINTERP_BORROWED.with(|borrowed| borrowed.get()) {
+        if SUBINTERP_BORROWED_DEPTH.with(|depth| depth.get() != 0) {
             return true;
         }
         let slot = SUBINTERP_SLOT.with(|s| s.get());
@@ -134,7 +134,7 @@ pub unsafe fn pool_ensure() -> bool {
 
 pub unsafe fn pool_release() {
     unsafe {
-        if SUBINTERP_BORROWED.with(|borrowed| borrowed.get()) {
+        if SUBINTERP_BORROWED_DEPTH.with(|depth| depth.get() != 0) {
             return;
         }
         let ts = SUBINTERP_TS.with(|t| t.get());
@@ -200,8 +200,10 @@ pub unsafe fn pool_init() {
                 for j in 0..i {
                     let init_ts = read_init_ts(j as usize);
                     if !init_ts.is_null() {
-                        PY_EVAL_RELEASE_THREAD(init_ts);
-                        PY_EVAL_ACQUIRE_THREAD(main_ts);
+                        PY_EVAL_RELEASE_THREAD(main_ts);
+                        PY_EVAL_ACQUIRE_THREAD(init_ts);
+                        PY_END_INTERPRETER(init_ts);
+                        PY_THREAD_STATE_SWAP(main_ts);
                         write_init_ts(j as usize, std::ptr::null_mut());
                         write_interp_state(j as usize, std::ptr::null_mut());
                     }

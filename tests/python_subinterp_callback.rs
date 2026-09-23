@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 
-fn run_case(source: &str, helper: &str) {
+fn run_case(source: &str, helper: &str, expected: &str) {
     let dir = std::env::temp_dir().join(format!(
         "olive_subinterp_callback_{}_{}",
         std::process::id(),
@@ -35,7 +35,11 @@ fn run_case(source: &str, helper: &str) {
         }
         assert!(!String::from_utf8_lossy(&output.stderr).contains("Fatal Python error"));
     };
-    run(std::path::Path::new(pit), &["run", "main.liv"], Some("7\n"));
+    run(
+        std::path::Path::new(pit),
+        &["run", "main.liv"],
+        Some(expected),
+    );
     let binary = dir.join("main");
     run(
         std::path::Path::new(pit),
@@ -48,7 +52,7 @@ fn run_case(source: &str, helper: &str) {
         ],
         None,
     );
-    run(&binary, &[], Some("7\n"));
+    run(&binary, &[], Some(expected));
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -74,5 +78,32 @@ def run_thread(fn, x):
     thread.join()
     return result[0]
 "#,
+        "7\n",
+    );
+}
+
+#[test]
+fn nested_python_callback_preserves_outer_borrowed_interpreter() {
+    run_case(
+        r#"import py "threadhelper" as h
+
+fn nested(x: int) -> int:
+    return x * 2
+
+fn callback(x: int) -> int:
+    let first = h.reenter(nested, x)
+    let second = h.reenter(nested, x + 1)
+    return first + second
+
+fn main():
+    print(h.outer(callback, nested, 3))
+"#,
+        r#"def reenter(fn, x):
+    return fn(x)
+
+def outer(fn, nested, x):
+    return fn(x)
+"#,
+        "14\n",
     );
 }
