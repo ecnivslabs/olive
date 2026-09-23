@@ -245,18 +245,6 @@ impl<M: Module> CraneliftCodegen<M> {
                     &func.locals[ap.result_local.0].ty,
                 );
                 builder.def_var(vars[&ap.result_local], value);
-                // Ownership handoff: the awaited child was moved into this
-                // await. Its result is now harvested above, so release the
-                // child handle here. Later re-polls of a completed child
-                // serve from the handle cache, and `olive_free_future` is
-                // kind aware for plain and state machine futures alike.
-                let child = builder.ins().load(types::I64, mf, frame_c, 8);
-                let free_id = *self
-                    .func_ids
-                    .get("__olive_free_future")
-                    .expect("missing __olive_free_future");
-                let free_ref = self.module.declare_func_in_func(free_id, builder.func);
-                builder.ins().call(free_ref, &[child]);
             }
             builder.ins().jump(seg_blks[ap.bb_idx][resume_seg], &[]);
         }
@@ -462,7 +450,7 @@ impl<M: Module> CraneliftCodegen<M> {
             builder.ins().store(mf, param, frame_ptr, offset);
         }
 
-        let future_sz = builder.ins().iconst(types::I64, 56);
+        let future_sz = builder.ins().iconst(types::I64, 64);
         let fut_call = builder.ins().call(alloc_ref, &[future_sz]);
         let fut_ptr = builder.inst_results(fut_call)[0];
 
@@ -482,11 +470,12 @@ impl<M: Module> CraneliftCodegen<M> {
         );
         self.intern_attr_string(&result_desc);
         let data_id = self.string_ids[&result_desc];
-        let local_data = self.module.declare_data_in_func(data_id, builder.func);
-        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+        let desc_ptr = super::setup::strings::literal_body(&mut builder, &mut self.module, data_id);
         builder.ins().store(mf, desc_ptr, fut_ptr, 32);
         builder.ins().store(mf, fsz, fut_ptr, 40);
         builder.ins().store(mf, zero, fut_ptr, 48);
+        builder.ins().store(mf, zero, fut_ptr, 56);
+        builder.ins().store(mf, zero, fut_ptr, 57);
 
         builder.ins().return_(&[fut_ptr]);
         builder.finalize();
@@ -560,8 +549,7 @@ impl<M: Module> CraneliftCodegen<M> {
         );
         self.intern_attr_string(&result_desc);
         let data_id = self.string_ids[&result_desc];
-        let local_data = self.module.declare_data_in_func(data_id, builder.func);
-        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+        let desc_ptr = super::setup::strings::literal_body(&mut builder, &mut self.module, data_id);
         builder.ins().store(mf, desc_ptr, cb_ptr, 16);
 
         for (i, &arg) in params.iter().enumerate() {

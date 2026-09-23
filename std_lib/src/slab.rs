@@ -360,6 +360,28 @@ pub(crate) fn global_iter_owns_addr(addr: usize) -> bool {
     GLOBAL_SLABS.lock().unwrap().iter.owns_addr(addr)
 }
 
+pub(crate) fn global_str_owns_addr(addr: usize, class: usize) -> bool {
+    GLOBAL_SLABS
+        .lock()
+        .unwrap()
+        .str_slabs
+        .get(class)
+        .and_then(Option::as_ref)
+        .is_some_and(|slab| slab.owns_addr(addr))
+}
+
+pub(crate) fn global_str_free(addr: usize, class: usize) {
+    if let Some(slab) = GLOBAL_SLABS
+        .lock()
+        .unwrap()
+        .str_slabs
+        .get_mut(class)
+        .and_then(Option::as_mut)
+    {
+        slab.free(addr as *mut u8);
+    }
+}
+
 pub(crate) fn global_struct_raw_owns_addr(addr: usize) -> bool {
     GLOBAL_SLABS.lock().unwrap().struct_slabs.owns_addr(addr)
 }

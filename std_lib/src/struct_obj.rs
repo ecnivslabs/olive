@@ -190,7 +190,10 @@ pub extern "C" fn olive_fatptr_alloc() -> i64 {
 /// with the string tag bits stripped so it reads as a raw descriptor pointer.
 pub(crate) fn fatptr_desc(ptr: i64) -> i64 {
     unsafe {
-        *(ptr as *const i64).add(4) & !(crate::string_slab::STR_TAG | crate::string_slab::STR_HEAP)
+        *(ptr as *const i64).add(4)
+            & !(crate::string_slab::STR_TAG
+                | crate::string_slab::STR_HEAP
+                | crate::string_slab::STR_LITERAL)
     }
 }
 

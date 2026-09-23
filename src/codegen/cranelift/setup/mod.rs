@@ -12,7 +12,7 @@ mod extern_vars;
 mod kind_history;
 mod profiling;
 mod pymodule;
-mod strings;
+pub(super) mod strings;
 
 #[cfg(test)]
 mod tests;
@@ -248,6 +248,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_file_read_n", &sig_i64_i64_i64),
             ("__olive_file_rename", &sig_i64_i64_i64),
             ("__olive_file_seek", &sig_3i64_i64),
+            ("__olive_file_append_str", &sig_i64_i64_i64),
             ("__olive_file_stat", &sig_i64_i64),
             ("__olive_file_tell", &sig_i64_i64),
             ("__olive_file_write", &sig_i64_i64_i64),
@@ -275,6 +276,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_enum_new_reuse", &sig_6i64_i64),
             ("__olive_copy_typed", &sig_i64_i64_i64),
             ("__olive_relocate_typed", &sig_i64_i64_i64),
+            ("__olive_relocate_any", &sig_i64_i64),
             ("__olive_eq_typed", &sig_3i64_i64),
             ("__olive_obj_set_typed", &sig_4i64_i64),
             ("__olive_obj_set_replacing_typed", &sig_i64_5_i64),
@@ -325,6 +327,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_set_index_any_typed", &sig_5i64_void),
             ("__olive_getslice_any", &sig_i64_5_i64),
             ("__olive_bounds_fail", &sig_3i64_i64),
+            ("__olive_bounds_fail_unsigned", &sig_3i64_i64),
             ("__olive_nil_index_fail", &sig_i64_i64),
             ("__olive_div_zero_fail", &sig_i64_i64_i64),
             ("__olive_overflow_fail", &sig_4i64_i64),
@@ -355,6 +358,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_http_stream_take_error", &sig_i64_i64),
             ("__olive_http_stream_close", &sig_i64_void),
             ("__olive_http_put", &sig_i64_i64_i64),
+            ("__olive_http_str_is_null", &sig_i64_i64),
             ("__olive_in_list", &sig_i64_i64_i64),
             ("__olive_in_obj", &sig_i64_i64_i64),
             ("__olive_int", &sig_i64_i64),
@@ -497,6 +501,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_process_wait_timeout", &sig_i64_i64_i64),
             ("__olive_process_read_stdout", &sig_i64_i64),
             ("__olive_process_read_stderr", &sig_i64_i64),
+            ("__olive_process_stdout_truncated", &sig_i64_i64),
+            ("__olive_process_stderr_truncated", &sig_i64_i64),
             ("__olive_process_write_stdin", &sig_i64_i64_i64),
             ("__olive_process_close_stdin", &sig_i64_i64),
             ("__olive_process_terminate", &sig_i64_i64),
@@ -897,10 +903,14 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_dlpack_export", &sig_7i64_i64),
             ("__olive_dlpack_import", &sig_i64_i64),
             ("__olive_dlpack_data_ptr", &sig_i64_i64),
+            ("__olive_dlpack_byte_offset", &sig_i64_i64),
             ("__olive_dlpack_ndim", &sig_i64_i64),
             ("__olive_dlpack_shape_at", &sig_i64_i64_i64),
+            ("__olive_dlpack_strides_at", &sig_i64_i64_i64),
             ("__olive_dlpack_dtype_code", &sig_i64_i64),
             ("__olive_dlpack_bits", &sig_i64_i64),
+            ("__olive_dlpack_lanes", &sig_i64_i64),
+            ("__olive_dlpack_device_id", &sig_i64_i64),
             ("__olive_dlpack_device_type", &sig_i64_i64),
             ("__olive_dlpack_release", &sig_i64_void),
         ];
@@ -1020,7 +1030,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             sig.params.push(AbiParam::new(ty));
                         } else if size <= 16 {
                             sig.params.push(AbiParam::new(eightbyte_ty(0, types::I64)));
-                            sig.params.push(AbiParam::new(eightbyte_ty(1, types::I64)));
+                            let tail = if size <= 12 { types::I32 } else { types::I64 };
+                            sig.params.push(AbiParam::new(eightbyte_ty(1, tail)));
                         } else {
                             sig.params
                                 .push(AbiParam::new(self.module.isa().pointer_type()));
@@ -1050,6 +1061,8 @@ impl<M: Module> CraneliftCodegen<M> {
                                 } else {
                                     types::F64
                                 }
+                            } else if size - 8 <= 4 {
+                                types::I32
                             } else {
                                 types::I64
                             }

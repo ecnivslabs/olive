@@ -7,11 +7,9 @@ use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
-/// Both low tag bits of an Olive string word (`STR_TAG | STR_HEAP`, see
-/// `str_body` in the runtime and `STR_TAG_BITS` in `translate_rvalue`).
-/// A foreign `char*` argument must clear both: clearing only bit 0 hands a
-/// heap string to C two bytes past its body.
-const STR_TAG_BITS: i64 = 3;
+/// Low tag bits of an Olive string word. A foreign `char*` argument must
+/// clear the string, heap, and literal markers.
+const STR_TAG_BITS: i64 = 7;
 
 fn vararg_code(declared: Option<&str>, static_ty: Option<&OliveType>, fixed: bool) -> i64 {
     if fixed && let Some(name) = declared {
@@ -33,6 +31,54 @@ fn vararg_code(declared: Option<&str>, static_ty: Option<&OliveType>, fixed: boo
         Some(OliveType::I32 | OliveType::U32) => 3,
         Some(OliveType::Str | OliveType::Ptr(_)) => 6,
         _ => 0,
+    }
+}
+
+fn store_aggregate_return_chunks(
+    builder: &mut FunctionBuilder,
+    destination: Value,
+    results: &[Value],
+    size: i64,
+) {
+    let mut offset = 0i64;
+    let zero = builder.ins().iconst(types::I8, 0);
+    for byte in 0..size {
+        builder
+            .ins()
+            .store(MemFlags::trusted(), zero, destination, byte as i32);
+    }
+    for &result in results {
+        if offset >= size {
+            break;
+        }
+        let result_type = builder.func.dfg.value_type(result);
+        let mut word = if result_type == types::F32 {
+            builder.ins().bitcast(types::I32, MemFlags::new(), result)
+        } else if result_type == types::F64 {
+            builder.ins().bitcast(types::I64, MemFlags::new(), result)
+        } else {
+            result
+        };
+        let word_type = builder.func.dfg.value_type(word);
+        let word_bytes = match word_type {
+            types::I8 => 1,
+            types::I16 => 2,
+            types::I32 => 4,
+            types::I64 => 8,
+            _ => 8,
+        };
+        let mut shift = 0i32;
+        while offset < size && shift < word_bytes * 8 {
+            let byte = builder.ins().ireduce(types::I8, word);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), byte, destination, offset as i32);
+            offset += 1;
+            shift += 8;
+            if offset < size && shift < word_bytes * 8 {
+                word = builder.ins().ushr_imm(word, 8);
+            }
+        }
     }
 }
 
@@ -126,7 +172,7 @@ fn emit_vararg_runtime_call<M: Module>(
         let fixed = entry.is_some_and(|e| i < e.params.len());
         let declared = entry.and_then(|e| e.params.get(i).map(String::as_str));
         let code = vararg_code(declared, static_ty.as_ref(), fixed);
-        let value = if code == 6 && matches!(static_ty, Some(OliveType::Str)) {
+        let value = if code == 6 {
             builder.ins().band_imm(value, !STR_TAG_BITS)
         } else {
             value
@@ -284,8 +330,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     let data_id = *string_ids
                         .get(&desc)
                         .expect("type descriptor not interned during collection");
-                    let local_data = module.declare_data_in_func(data_id, builder.func);
-                    let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                    let desc_ptr = super::setup::strings::literal_body(builder, module, data_id);
                     let sym = if name == "print" || name == "__olive_write_any" {
                         if name == "print" {
                             "__olive_print_typed"
@@ -355,8 +400,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let data_id = *string_ids
                     .get(&desc)
                     .expect("copy descriptor not interned during collection");
-                let local_data = module.declare_data_in_func(data_id, builder.func);
-                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let desc_ptr = super::setup::strings::literal_body(builder, module, data_id);
                 let func_id = func_ids[name.as_str()];
                 let local_func = module.declare_func_in_func(func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[call_args[0], desc_ptr]);
@@ -376,8 +420,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let data_id = *string_ids
                     .get(&desc)
                     .expect("eq descriptor not interned during collection");
-                let local_data = module.declare_data_in_func(data_id, builder.func);
-                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let desc_ptr = super::setup::strings::literal_body(builder, module, data_id);
                 let func_id = func_ids["__olive_eq_typed"];
                 let local_func = module.declare_func_in_func(func_id, builder.func);
                 let inst = builder
@@ -484,8 +527,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let data_id = *string_ids
                     .get(&desc)
                     .expect("typed list op descriptor not interned during collection");
-                let local_data = module.declare_data_in_func(data_id, builder.func);
-                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let desc_ptr = super::setup::strings::literal_body(builder, module, data_id);
                 let func_id = func_ids[name.as_str()];
                 let local_func = module.declare_func_in_func(func_id, builder.func);
                 // These callees all declare i64-only parameters, but the
@@ -519,8 +561,11 @@ impl<M: Module> CraneliftCodegen<M> {
                     let value_data_id = *string_ids
                         .get(&value_desc)
                         .expect("get value descriptor not interned during collection");
-                    let value_local_data = module.declare_data_in_func(value_data_id, builder.func);
-                    full_args.push(builder.ins().symbol_value(types::I64, value_local_data));
+                    full_args.push(super::setup::strings::literal_body(
+                        builder,
+                        module,
+                        value_data_id,
+                    ));
                 }
                 // `setdefault` discards its default through the value's own
                 // descriptor on a hit, so it carries a second descriptor
@@ -540,8 +585,11 @@ impl<M: Module> CraneliftCodegen<M> {
                     let val_data_id = *string_ids
                         .get(&val_desc)
                         .expect("setdefault value descriptor not interned during collection");
-                    let val_local_data = module.declare_data_in_func(val_data_id, builder.func);
-                    full_args.push(builder.ins().symbol_value(types::I64, val_local_data));
+                    full_args.push(super::setup::strings::literal_body(
+                        builder,
+                        module,
+                        val_data_id,
+                    ));
                 }
                 let inst = builder.ins().call(local_func, &full_args);
                 let results = builder.inst_results(inst);
@@ -572,8 +620,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 let value_data_id = *string_ids
                     .get(&value_desc)
                     .expect("get value descriptor not interned during collection");
-                let value_local_data = module.declare_data_in_func(value_data_id, builder.func);
-                let value_desc_ptr = builder.ins().symbol_value(types::I64, value_local_data);
+                let value_desc_ptr =
+                    super::setup::strings::literal_body(builder, module, value_data_id);
                 let mut full_args: Vec<Value> = call_args
                     .iter()
                     .map(|&arg| super::translate_rvalue::float_word_for_i64_slot(builder, arg))
@@ -680,13 +728,19 @@ impl<M: Module> CraneliftCodegen<M> {
                         final_args.push(raw);
                         continue;
                     }
-                    let is_str_arg = args.get(i).is_some_and(|op| match op {
-                        Operand::Constant(Constant::Str(_)) => true,
-                        Operand::Copy(l) | Operand::Move(l) => {
-                            matches!(func_mir.locals[l.0].ty, OliveType::Str)
-                        }
-                        _ => false,
-                    });
+                    let is_str_arg = if let Some(entry) = ffi_entry
+                        && i < entry.params.len()
+                    {
+                        matches!(entry.params[i].as_str(), "str" | "ptr")
+                    } else {
+                        args.get(i).is_some_and(|op| match op {
+                            Operand::Constant(Constant::Str(_)) => true,
+                            Operand::Copy(l) | Operand::Move(l) => {
+                                matches!(func_mir.locals[l.0].ty, OliveType::Str)
+                            }
+                            _ => false,
+                        })
+                    };
 
                     if is_ffi
                         && let Some(entry) = ffi_entry
@@ -777,6 +831,8 @@ impl<M: Module> CraneliftCodegen<M> {
                                             } else {
                                                 types::F64
                                             }
+                                        } else if size - 8 <= 4 {
+                                            types::I32
                                         } else {
                                             types::I64
                                         }
@@ -1056,18 +1112,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         let size_val = builder.ins().iconst(types::I64, size);
                         let alloc_inst = builder.ins().call(local_alloc, &[size_val]);
                         let heap_ptr = builder.inst_results(alloc_inst)[0];
-                        if results.len() == 1 {
-                            builder
-                                .ins()
-                                .store(MemFlags::trusted(), results[0], heap_ptr, 0);
-                        } else if results.len() == 2 {
-                            builder
-                                .ins()
-                                .store(MemFlags::trusted(), results[0], heap_ptr, 0);
-                            builder
-                                .ins()
-                                .store(MemFlags::trusted(), results[1], heap_ptr, 8);
-                        }
+                        store_aggregate_return_chunks(builder, heap_ptr, &results, size);
                         heap_ptr
                     } else {
                         if results.is_empty() {

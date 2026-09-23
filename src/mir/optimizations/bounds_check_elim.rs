@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::mir::loop_utils;
 use crate::mir::optimizations::Transform;
 use crate::mir::*;

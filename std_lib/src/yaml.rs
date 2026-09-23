@@ -16,7 +16,7 @@ pub extern "C" fn olive_yaml_parse(s: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_yaml_stringify(ptr: i64) -> i64 {
     let val = olive_to_json(ptr);
-    match serde_yaml::to_string(&val) {
+    match serde_yaml::to_value(&val).and_then(|value| serde_yaml::to_string(&value)) {
         Ok(s) => olive_str_internal(&s),
         Err(_) => 0,
     }
@@ -37,7 +37,10 @@ pub extern "C" fn olive_toml_parse(s: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_toml_stringify(ptr: i64) -> i64 {
     let val = olive_to_json(ptr);
-    match toml::to_string(&val) {
+    match toml::Value::try_from(&val)
+        .map_err(|_| ())
+        .and_then(|value| toml::to_string(&value).map_err(|_| ()))
+    {
         Ok(s) => olive_str_internal(&s),
         Err(_) => 0,
     }
@@ -54,6 +57,18 @@ mod tests {
 
     fn from_ptr(ptr: i64) -> String {
         crate::olive_str_from_ptr(ptr)
+    }
+
+    #[test]
+    fn yaml_stringify_non_string_key_is_not_dropped() {
+        let mut fields = rustc_hash::FxHashMap::default();
+        fields.insert(crate::OliveStringKey(1), s("a"));
+        let ptr = crate::obj::new_obj_from_map(fields);
+        let result = olive_yaml_stringify(ptr);
+        assert_ne!(result, 0);
+        assert!(from_ptr(result).contains("1"));
+        crate::olive_free_str(result);
+        crate::olive_free_obj(ptr);
     }
 
     #[test]

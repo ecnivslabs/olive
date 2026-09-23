@@ -21,6 +21,9 @@ pub fn ffi_type_expr_unsafe_reason(expr: &crate::parser::ast::TypeExpr) -> Optio
         TypeExprKind::FixedArray(_, _) => {
             Some("a fixed-size array parameter has no single C ABI value representation")
         }
+        TypeExprKind::Qualified(_) => {
+            Some("qualified nested C types are not resolved by the FFI ABI validator")
+        }
         _ => None,
     }
 }
@@ -186,7 +189,7 @@ pub type FfiFieldLayout = (String, i32, String, Option<(u8, u8)>);
 fn c_prim_layout(ty: &str) -> (i32, i32) {
     match ty {
         "f64" | "i64" | "u64" | "ptr" => (8, 8),
-        "f32" | "i32" | "u32" => (4, 4),
+        "f32" | "float" | "i32" | "u32" | "int" => (4, 4),
         "i16" | "u16" => (2, 2),
         "i8" | "u8" | "bool" => (1, 1),
         _ if ty.starts_with('[') => {

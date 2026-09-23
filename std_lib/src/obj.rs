@@ -7,13 +7,12 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveObj>(), release_obj_storage)) };
 }
 
-#[inline]
-fn is_live_kind(val: i64, expected: i64) -> bool {
-    val != 0 && crate::slab::ptr_is_slab_body(val) && unsafe { *(val as *const i64) == expected }
+fn is_obj_word(val: i64) -> bool {
+    crate::is_kind(val, KIND_OBJ)
 }
 
-fn is_live_obj(val: i64) -> bool {
-    is_live_kind(val, KIND_OBJ) && obj_slab_owns(val)
+fn is_py_word(val: i64) -> bool {
+    crate::is_kind(val, KIND_PYOBJECT)
 }
 
 pub(crate) unsafe fn release_obj_storage(body: *mut u8) {
@@ -94,12 +93,11 @@ fn obj_store(obj_ptr: i64, attr: i64, val: i64, val_desc: Option<*const u8>) -> 
     if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to set attribute on a null object");
     }
-    if !crate::slab::ptr_is_slab_body(obj_ptr) {
-        return obj_ptr;
-    }
-    let kind = unsafe { *(obj_ptr as *const i64) };
-    if kind == KIND_PYOBJECT {
+    if is_py_word(obj_ptr) {
         return python::olive_py_setattr(obj_ptr as *mut std::ffi::c_void, attr, val) as i64;
+    }
+    if !is_obj_word(obj_ptr) {
+        return obj_ptr;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     // A heap string key is a caller value that will be freed at its scope
@@ -131,12 +129,14 @@ fn obj_store(obj_ptr: i64, attr: i64, val: i64, val_desc: Option<*const u8>) -> 
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
-    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+    if obj_ptr == 0 {
         return 0;
     }
-    let kind = unsafe { *(obj_ptr as *const i64) };
-    if kind == KIND_PYOBJECT {
+    if is_py_word(obj_ptr) {
         return python::olive_py_dict_get_default(obj_ptr, attr, 0);
+    }
+    if !is_obj_word(obj_ptr) {
+        return 0;
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     *m.fields.get(&OliveStringKey(attr)).unwrap_or(&0)
@@ -144,12 +144,11 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
-    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+    if obj_ptr == 0 || (!is_obj_word(obj_ptr) && !is_py_word(obj_ptr)) {
         crate::panic::olive_nil_index_fail(loc);
         return 0;
     }
-    let kind = unsafe { *(obj_ptr as *const i64) };
-    if kind == KIND_PYOBJECT {
+    if is_py_word(obj_ptr) {
         return python::olive_py_dict_get_default(obj_ptr, attr, 0);
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -187,11 +186,10 @@ pub extern "C" fn olive_obj_get_boxed(obj_ptr: i64, attr: i64, value_desc: i64) 
 }
 
 fn get_default_impl(obj_ptr: i64, attr: i64, default: i64, boxed: bool, value_desc: i64) -> i64 {
-    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+    if obj_ptr == 0 || (!is_obj_word(obj_ptr) && !is_py_word(obj_ptr)) {
         return default;
     }
-    let kind = unsafe { *(obj_ptr as *const i64) };
-    if kind == KIND_PYOBJECT {
+    if is_py_word(obj_ptr) {
         // `.get(key, default)` is dict-lookup semantics: index by key (not
         // attribute) and fall back to `default`, matching Python's `dict.get`.
         return python::olive_py_dict_get_default(obj_ptr, attr, default);
@@ -257,7 +255,7 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
 /// keys strand.
 pub(crate) fn olive_obj_remove_inner(obj_ptr: i64, attr: i64, key_desc: Option<i64>) -> i64 {
     // SAFETY: body moved verbatim from the extern below — same contract (live dict; map ops stay inside it).
-    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+    if !is_obj_word(obj_ptr) {
         return 0;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
@@ -302,7 +300,7 @@ pub(crate) fn olive_obj_pop_checked_inner(
     key_desc: Option<i64>,
 ) -> i64 {
     // SAFETY: body moved verbatim from the extern below — same contract (live dict; map ops stay inside it).
-    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+    if !is_obj_word(obj_ptr) {
         crate::panic::olive_nil_index_fail(loc);
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
@@ -331,7 +329,7 @@ pub(crate) fn olive_obj_pop_default_inner(
     key_desc: Option<i64>,
 ) -> i64 {
     // SAFETY: body moved verbatim from the extern below — same contract (live dict; map ops stay inside it).
-    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+    if !is_obj_word(obj_ptr) {
         return default;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
@@ -352,7 +350,7 @@ pub extern "C" fn olive_obj_setdefault(
     default: i64,
     val_desc: i64,
 ) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         panic!("Null pointer dereference: attempted to use setdefault on a null object");
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -381,18 +379,8 @@ pub extern "C" fn olive_obj_setdefault(
 /// words here, see `olive_obj_update_typed` for heap-owning values.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
-    if obj_ptr == 0 || other_ptr == 0 || !crate::slab::ptr_is_slab_body(other_ptr) {
+    if !is_obj_word(obj_ptr) || !is_obj_word(other_ptr) {
         return obj_ptr;
-    }
-    // Only dicts carry a field map; anything else reads the word as a map
-    // header. The checker rejects these statically; this is the dynamic
-    // backstop. (`None` keeps its historical silent no-op.)
-    if other_ptr != 0 && unsafe { *(other_ptr as *const i64) } != KIND_OBJ {
-        let kind_name = olive_str_from_ptr(olive_typeof_str(other_ptr));
-        crate::panic::abort(
-            &format!("`update` requires a dict argument, got `{kind_name}`"),
-            None,
-        );
     }
     // Snapshotted before inserting: `olive_obj_set` can rehash `obj_ptr`'s
     // map, and when the two arguments alias (or a key copy allocates while
@@ -412,7 +400,7 @@ pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
 /// returns it.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         return obj_ptr;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
@@ -435,7 +423,7 @@ pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
 /// goes away.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_clear_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         return obj_ptr;
     }
     // SAFETY: same contract as the untyped snapshot/clear above — the
@@ -463,7 +451,7 @@ pub extern "C" fn olive_obj_clear_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         panic!("Null pointer dereference: attempted to check 'in' on a null object");
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -476,7 +464,7 @@ pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         panic!("Null pointer dereference: attempted to get length of a null object");
     }
     unsafe { (*(obj_ptr as *const OliveObj)).fields.len() as i64 }
@@ -492,7 +480,7 @@ type ElementDropHook = extern "C" fn(i64) -> i64;
 /// never runs user code.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dict_drop_each_struct(ptr: i64, hook: i64) {
-    if ptr == 0 || hook == 0 {
+    if !is_obj_word(ptr) || hook == 0 {
         return;
     }
     let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
@@ -511,7 +499,7 @@ pub extern "C" fn olive_dict_drop_each_struct(ptr: i64, hook: i64) {
 /// untouched, so only hooked arms are zeroed.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dict_drop_each_union(ptr: i64, hook: i64) {
-    if ptr == 0 || hook == 0 {
+    if !is_obj_word(ptr) || hook == 0 {
         return;
     }
     let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
@@ -543,7 +531,7 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
     } else {
         obj_slab_owns(ptr)
     };
-    if !is_ours {
+    if !is_ours || !is_obj_word(ptr) {
         return;
     }
     if crate::slab::slot_is_live(ptr) {
@@ -650,12 +638,12 @@ pub extern "C" fn olive_dict_new_reuse(old_ptr: i64, bump: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_obj(val: i64) -> i64 {
-    is_live_obj(val) as i64
+    is_obj_word(val) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
-    if !is_live_obj(obj_ptr) {
+    if !is_obj_word(obj_ptr) {
         return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -679,7 +667,7 @@ pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
 /// with the key encoding at offset 1.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
-    if !is_live_obj(obj_ptr) {
+    if !is_obj_word(obj_ptr) {
         return crate::list::list_from_vec(Vec::new());
     }
     // SAFETY: same contract as the untyped snapshot/clear above — the
@@ -703,7 +691,7 @@ pub extern "C" fn olive_obj_keys_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
 /// Returns a list of `[key, value]` pairs, backing `for k, v in d.items()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_items(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         return crate::list::olive_list_new(0);
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -735,7 +723,7 @@ pub extern "C" fn olive_obj_items(obj_ptr: i64) -> i64 {
 /// to reach the value descriptor, mirroring `olive_obj_update_typed`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_items_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         return crate::list::olive_list_new(0);
     }
     // SAFETY: same contract as the untyped snapshot/clear above — the
@@ -772,7 +760,7 @@ pub extern "C" fn olive_obj_items_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -794,7 +782,7 @@ pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
 /// descriptor, mirroring `olive_obj_update_typed`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_values_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_obj_word(obj_ptr) {
         return crate::list::list_from_vec(Vec::new());
     }
     // SAFETY: same contract as the untyped snapshot/clear above — the
@@ -861,6 +849,17 @@ mod tests {
         let keys = olive_obj_keys(raw);
         assert_eq!(crate::list::olive_list_len(keys), 0);
         crate::list::olive_free_list(keys);
+        crate::struct_obj::olive_free_struct(raw);
+    }
+
+    #[test]
+    fn object_mutation_rejects_raw_struct_with_object_header() {
+        let raw = crate::struct_obj::olive_struct_alloc(2);
+        assert_eq!(olive_obj_get(raw, s("missing")), 0);
+        assert_eq!(olive_obj_pop_default(raw, s("missing"), 7), 7);
+        olive_obj_clear(raw);
+        olive_dict_drop_each_struct(raw, 0);
+        olive_free_obj(raw);
         crate::struct_obj::olive_free_struct(raw);
     }
 

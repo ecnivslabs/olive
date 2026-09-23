@@ -2,7 +2,7 @@
 
 The Olive compiler optimizes on the Middle Intermediate Representation (MIR). Passes are iterative and compositional; one pass often reveals opportunities for the next.
 
-Two pipelines exist. Debug builds (`pit run`, `pit build` without `--release`) run only ownership inference, CFG cleanup, dead code elimination, and move elision, keeping compiles fast. Release builds (`--release`) run everything below. Ownership inference and generation checks run in both, because drops and safety checks are semantics, not optimizations.
+Two pipelines exist. Debug builds (`pit run`, `pit build` without `--release`) run only ownership inference, CFG cleanup, dead code elimination, and move elision, keeping compiles fast. Release builds (`--release`) run the enabled passes below. Ownership inference and generation checks run in both, because drops and safety checks are semantics, not optimizations.
 
 ## Ownership Inference
 
@@ -56,10 +56,10 @@ Non-escaping tuples and structs are broken into their individual fields, which t
 A function whose final action is a call becomes a jump, so recursive algorithms run with the memory profile of a loop.
 
 ### Loop-Invariant Code Motion
-Computations that produce the same result on every iteration are hoisted out of the loop.
+Experimental. The pass is excluded from release builds until it can prove that every moved definition dominates all loop exits and executes whenever the original definition does.
 
 ### SIMD Vectorization
-Data-parallel loop patterns are rewritten to SIMD instructions (AVX2, NEON) where the target supports them.
+Experimental. The pass is excluded from release builds until it proves memory bounds, list slot layout, and trip counts for every vector load and store.
 
 ### Loop Unrolling
 Short counted loops are fully unrolled (up to 32 iterations); longer ones are partially unrolled by a factor of 4 to cut branch overhead and expose more scalar optimization.
@@ -67,7 +67,7 @@ Short counted loops are fully unrolled (up to 32 iterations); longer ones are pa
 ## Late Passes
 
 ### Bounds-Check Elimination
-Runs last among the optimizations, so no later pass can move an access it has already proven safe. An index proven in range by loop analysis drops its runtime check.
+Experimental. The pass is excluded from release builds until guard dominance, alias-aware mutation, and induction overflow are proven for every supported loop form.
 
 ### Generation-Check Insertion
 Runs after everything, in both pipelines. Inserts the runtime staleness checks that back ownership inference (see [Internals](internals.md)); a forward analysis elides every check it can prove unnecessary. A parallel must-free lattice, computed at the same time, promotes sites where staleness is provably certain on every path to compile-time errors (`E0708`) rather than runtime checks.
@@ -79,5 +79,4 @@ Runs after everything, in both pipelines. Inserts the runtime staleness checks t
 ## Inspecting the Pipeline
 
 - `pit run --emit-mir`: prints the MIR after all optimizations.
-- `pit build --emit-mir`: same, for the AOT pipeline.
 - `pit run -t`: prints per-stage compile timings.

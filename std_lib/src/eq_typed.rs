@@ -159,7 +159,7 @@ fn eq_any_words(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> bool {
         return true;
     }
     let (ka, kb) = unsafe { (*(a as *const i64), *(b as *const i64)) };
-    if ka == crate::KIND_BYTES && kb == crate::KIND_BYTES {
+    if crate::is_kind(a, crate::KIND_BYTES) && crate::is_kind(b, crate::KIND_BYTES) {
         return unsafe {
             (*(a as *const crate::bytes::OliveBytes)).as_slice()
                 == (*(b as *const crate::bytes::OliveBytes)).as_slice()
@@ -167,6 +167,8 @@ fn eq_any_words(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> bool {
     }
     if (ka == crate::KIND_FLOAT || ka == crate::KIND_INT || ka == crate::KIND_U64)
         && (kb == crate::KIND_FLOAT || kb == crate::KIND_INT || kb == crate::KIND_U64)
+        && crate::is_kind(a, ka)
+        && crate::is_kind(b, kb)
     {
         // Heap scalar boxes compare by payload value, not pointer identity:
         // separately-erased equal floats/ints hold distinct boxes with

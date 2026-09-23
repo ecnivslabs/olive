@@ -245,21 +245,25 @@ impl<'a> MirBuilder<'a> {
         };
         if let Type::List(element) = from_ty
             && **element != Type::Any
+            && !Self::is_future_type(element)
         {
             return self.erase_list_elements(op, element, span);
         }
         if let Type::Set(element) = from_ty
             && **element != Type::Any
+            && !Self::is_future_type(element)
         {
             return self.erase_set_elements(op, element, span);
         }
         if let Type::Dict(key, value) = from_ty
-            && (**value != Type::Any || Self::any_needs_erase(key))
+            && (**value != Type::Any && !Self::is_future_type(value) || Self::any_needs_erase(key))
         {
             return self.erase_dict_values(op, key, value, span);
         }
         if let Type::Tuple(members) = from_ty
-            && members.iter().any(|m| *m != Type::Any)
+            && members
+                .iter()
+                .any(|m| *m != Type::Any && !Self::is_future_type(m))
         {
             return self.erase_tuple_elements(op, members, span);
         }
@@ -287,7 +291,7 @@ impl<'a> MirBuilder<'a> {
         // drop balances the allocation reference. Stripping ownership here
         // instead orphans the source allocation whenever the pass copies for
         // the box, and the drop gate never reaches zero.
-        if matches!(from_ty, Type::Struct(_, _, _)) {
+        if matches!(from_ty, Type::Struct(_, _, _)) && !Self::is_future_type(from_ty) {
             let desc = type_descriptor(
                 from_ty,
                 &self.struct_fields,
@@ -615,6 +619,13 @@ impl<'a> MirBuilder<'a> {
                 return self.realize_py_nullable(op, &target, to_ty, span);
             }
             return self.realize_py_value(op, &target, span);
+        }
+
+        // Future handles are self-describing runtime words. Keep containers of
+        // futures raw when crossing into Any; generic erasure would copy the
+        // handle through an unrelated scalar/struct path and corrupt it.
+        if *to_ty == Type::Any && Self::contains_future_type(from_ty) {
+            return op;
         }
 
         // A scalar widening into `Any` is boxed so the slot stays

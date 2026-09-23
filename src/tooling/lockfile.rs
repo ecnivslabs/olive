@@ -4,11 +4,20 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Lockfile {
     pub version: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pods: Vec<LockedPod>,
+}
+
+impl Default for Lockfile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            pods: Vec::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -23,6 +32,8 @@ pub struct LockedPod {
     /// pit.lock verifies on every platform a team builds on.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_implib: BTreeMap<String, String>,
 }
 
 pub fn load_lockfile_checked(path: &Path) -> Result<Option<Lockfile>, String> {
@@ -49,9 +60,10 @@ pub fn load_lockfile_checked(path: &Path) -> Result<Option<Lockfile>, String> {
                 pod.name
             ));
         }
-        semver::Version::parse(&pod.version).map_err(|error| {
+        crate::tooling::registry::validate_pod_name(&pod.name)?;
+        crate::tooling::registry::validate_version(&pod.version).map_err(|error| {
             format!(
-                "Invalid lockfile {}: pod '{}' has invalid version '{}': {error}",
+                "Invalid lockfile {}: pod '{}' has unsafe version '{}': {error}",
                 path.display(),
                 pod.name,
                 pod.version
@@ -61,7 +73,7 @@ pub fn load_lockfile_checked(path: &Path) -> Result<Option<Lockfile>, String> {
     Ok(Some(lockfile))
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub fn load_lockfile(path: &Path) -> Option<Lockfile> {
     load_lockfile_checked(path).ok().flatten()
 }
@@ -106,13 +118,14 @@ mod tests {
             cksum: cksum.to_string(),
             dependencies: deps.iter().map(|s| s.to_string()).collect(),
             native: BTreeMap::new(),
+            native_implib: BTreeMap::new(),
         }
     }
 
     #[test]
     fn lockfile_default_empty() {
         let lf = Lockfile::default();
-        assert_eq!(lf.version, 0);
+        assert_eq!(lf.version, 1);
         assert!(lf.pods.is_empty());
     }
 

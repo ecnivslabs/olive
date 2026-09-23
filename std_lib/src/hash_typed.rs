@@ -399,11 +399,13 @@ fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
         });
         return commutative(parts);
     }
-    if kind == crate::KIND_BYTES {
+    if crate::is_kind(v, crate::KIND_BYTES) {
         let bytes = unsafe { &*(v as *const crate::bytes::OliveBytes) }.as_slice();
         return one(hash_bytes(bytes));
     }
-    if kind == crate::KIND_FLOAT || kind == crate::KIND_INT || kind == crate::KIND_U64 {
+    if (kind == crate::KIND_FLOAT || kind == crate::KIND_INT || kind == crate::KIND_U64)
+        && crate::is_kind(v, kind)
+    {
         let b = unsafe { &*(v as *const crate::boxed::OliveBoxed) };
         return seq([kind as u64, b.bits as u64]);
     }

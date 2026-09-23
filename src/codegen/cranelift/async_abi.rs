@@ -82,10 +82,8 @@ impl<M: Module> CraneliftCodegen<M> {
             &self.enum_defs,
         );
         self.intern_attr_string(&desc);
-        let data = self
-            .module
-            .declare_data_in_func(self.string_ids[&desc], builder.func);
-        let desc_ptr = builder.ins().symbol_value(types::I64, data);
+        let desc_ptr =
+            super::setup::strings::literal_body(builder, &mut self.module, self.string_ids[&desc]);
         let call = builder.ins().call(relocate, &[arg, desc_ptr]);
         builder.inst_results(call)[0]
     }

@@ -147,7 +147,6 @@ struct File:
     fn __exit__(self):
         if self.handle != 0:
             __olive_file_close(self.handle)
-            self.handle = 0
 
     fn __drop__(self):
         if self.handle != 0:
@@ -162,13 +161,11 @@ struct File:
     fn append(self, data: str) -> bool:
         if self.handle == 0:
             return False
-        __olive_file_seek(self.handle, 0, 2)
-        return __olive_file_write_str(self.handle, data) == 1
+        return __olive_file_append_str(self.handle, data) == 1
 
     fn close(self):
         if self.handle != 0:
             __olive_file_close(self.handle)
-            self.handle = 0
 
 struct BufReader:
     handle: int
@@ -184,7 +181,6 @@ struct BufReader:
     fn close(self):
         if self.handle != 0:
             _bufread_close(self.handle)
-            self.handle = 0
 
     fn read_line(self) -> str | None:
         if self.handle == 0:
@@ -204,13 +200,11 @@ struct BufWriter:
         if self.handle != 0:
             _bufwrite_flush(self.handle)
             _bufwrite_close(self.handle)
-            self.handle = 0
 
     fn close(self):
         if self.handle != 0:
             _bufwrite_flush(self.handle)
             _bufwrite_close(self.handle)
-            self.handle = 0
 
     fn write(self, data: str) -> bool:
         if self.handle == 0 or data == "":

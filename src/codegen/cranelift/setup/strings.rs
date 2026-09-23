@@ -2,17 +2,32 @@ use super::super::CraneliftCodegen;
 use super::super::imports::{is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op};
 use crate::mir::MirFunction;
 use crate::mir::StatementKind;
+use cranelift::prelude::{FunctionBuilder, InstBuilder, Value, types};
 use cranelift_module::{DataDescription, Linkage, Module};
 
-/// Literal string data, NUL terminated and aligned so the low bits of its
-/// address stay clear for the Olive string pointer tag. Alignment is stated
-/// rather than inferred from a padded length, which only holds while the
-/// linker happens to lay these out contiguously from an aligned base.
+/// Literal string data carries its length in the word immediately before the
+/// tagged body. The body is eight-byte aligned, leaving bit two clear for
+/// foreign C pointers.
+pub(crate) const STR_LITERAL_HEADER_BYTES: i64 = 16;
+
+pub(crate) fn literal_body<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    id: cranelift_module::DataId,
+) -> Value {
+    let local = module.declare_data_in_func(id, builder.func);
+    let ptr = builder.ins().symbol_value(types::I64, local);
+    builder.ins().iadd_imm(ptr, STR_LITERAL_HEADER_BYTES)
+}
+
 fn literal_data(text: &str) -> DataDescription {
     let mut data_ctx = DataDescription::new();
-    let mut bytes = text.as_bytes().to_vec();
+    let mut bytes = vec![0u8; STR_LITERAL_HEADER_BYTES as usize];
+    let len = text.len() as u64;
+    bytes[8..16].copy_from_slice(&len.to_ne_bytes());
+    bytes.extend_from_slice(text.as_bytes());
     bytes.push(0);
-    while !bytes.len().is_multiple_of(STR_LITERAL_ALIGN as usize) {
+    while !(bytes.len() as u64).is_multiple_of(STR_LITERAL_ALIGN) {
         bytes.push(0);
     }
     data_ctx.set_align(STR_LITERAL_ALIGN);
@@ -20,9 +35,9 @@ fn literal_data(text: &str) -> DataDescription {
     data_ctx
 }
 
-/// Keeps bit0 (string tag) and bit1 (heap-allocated tag) clear on every
-/// literal address, so a tagged literal round trips through `str_body`.
-const STR_LITERAL_ALIGN: u64 = 4;
+/// Keeps low tag bits clear on every literal body. The literal length header
+/// occupies the preceding 16 bytes.
+const STR_LITERAL_ALIGN: u64 = 8;
 
 impl<M: Module> CraneliftCodegen<M> {
     pub(crate) fn intern_attr_string(&mut self, attr: &str) {

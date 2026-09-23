@@ -5,15 +5,14 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::RefCell;
 
 use crate::mir::optimizations::{
-    Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
-    const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
+    Transform, algebraic::AlgebraicSimplification, const_fold::ConstantFolding,
+    const_prop::ConstantPropagation, copy_prop::CopyPropagation,
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, devirtualize::Devirtualize,
     devirtualize_closure::DevirtualizeClosures, drop_hooks, gencheck::GenCheckInsertion,
-    gil_fusion::GilFusion, gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm,
-    list_append::ListAppend, loop_unroll::LoopUnroll, move_elision::MoveElision,
-    ownership::OwnershipInference, peephole::PeepholeOptimize, scalarize::ScalarizeStructs,
-    simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction, tail_call::TailCallOpt,
-    vectorize::LoopVectorizer,
+    gil_fusion::GilFusion, gvn::GlobalValueNumbering, inliner::Inliner, list_append::ListAppend,
+    loop_unroll::LoopUnroll, move_elision::MoveElision, ownership::OwnershipInference,
+    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
+    strength_reduction::StrengthReduction, tail_call::TailCallOpt,
 };
 
 pub struct Optimizer {
@@ -33,8 +32,8 @@ impl Default for Optimizer {
 }
 
 impl Optimizer {
-    /// Full optimizing pipeline. Used for release builds and by the in-process
-    /// test harness so every pass stays exercised.
+    /// Production release pipeline. Experimental passes remain excluded until
+    /// their safety proofs and regression coverage are complete.
     pub fn new() -> Self {
         Self::with_release(true, HashSet::default())
     }
@@ -67,8 +66,6 @@ impl Optimizer {
             ],
             late_passes: vec![
                 Box::new(TailCallOpt),
-                Box::new(Licm),
-                Box::new(LoopVectorizer),
                 Box::new(LoopUnroll),
                 Box::new(SimplifyCfg),
                 Box::new(DeadCodeElimination),
@@ -209,10 +206,6 @@ impl Optimizer {
             for pass in &self.late_passes {
                 pass.run(func);
             }
-
-            // Runs last so no later pass can rewrite an access whose bounds
-            // check it has already proven redundant.
-            BoundsCheckElim.run(func);
 
             // Runs after everything else settles final statement order, so
             // the runs it fuses are the ones that actually reach codegen.

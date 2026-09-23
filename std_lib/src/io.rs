@@ -2,7 +2,7 @@ use crate::{olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 fn olive_write_str_to_stdout(s: &str) {
     let stdout = std::io::stdout();
@@ -719,19 +719,42 @@ pub extern "C" fn olive_input(prompt_ptr: i64) -> i64 {
 /// generation baked into the high bits: a stale copy of a closed handle fails
 /// lookup instead of dereferencing freed memory.
 enum IoHandle {
-    File(std::fs::File),
+    File { file: std::fs::File, readable: bool },
     BufRead(std::io::BufReader<std::fs::File>),
     BufWrite(std::io::BufWriter<std::fs::File>),
 }
 
-fn handles() -> &'static Mutex<HashMap<i64, IoHandle>> {
-    static TABLE: OnceLock<Mutex<HashMap<i64, IoHandle>>> = OnceLock::new();
+type SharedIoHandle = Arc<Mutex<IoHandle>>;
+
+fn handles() -> &'static Mutex<HashMap<i64, SharedIoHandle>> {
+    static TABLE: OnceLock<Mutex<HashMap<i64, SharedIoHandle>>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(HashMap::default()))
 }
 
+const IO_HANDLE_TAG: i64 = 1 << 62;
+const IO_SLOT_MASK: i64 = (1 << 30) - 1;
+const IO_GENERATION_STEP: i64 = 1 << 31;
+
 fn next_handle_id() -> i64 {
-    static NEXT: AtomicI64 = AtomicI64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed) & i64::MAX
+    static NEXT: AtomicI64 = AtomicI64::new(IO_HANDLE_TAG | IO_GENERATION_STEP | 1);
+    loop {
+        let current = NEXT.load(Ordering::Relaxed);
+        if current <= 0
+            || current & IO_HANDLE_TAG != IO_HANDLE_TAG
+            || (current >> 1) & IO_SLOT_MASK == IO_SLOT_MASK
+        {
+            return 0;
+        }
+        let Some(next) = current.checked_add(IO_GENERATION_STEP) else {
+            return 0;
+        };
+        if NEXT
+            .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return current;
+        }
+    }
 }
 
 fn register_handle(entry: IoHandle) -> i64 {
@@ -743,12 +766,38 @@ fn register_handle(entry: IoHandle) -> i64 {
     if table.contains_key(&id) {
         return 0;
     }
-    table.insert(id, entry);
+    table.insert(id, Arc::new(Mutex::new(entry)));
     id
 }
 
-fn take_handle(handle: i64) -> Option<IoHandle> {
-    handles().lock().unwrap().remove(&handle)
+fn take_handle_matching(
+    handle: i64,
+    matches: impl FnOnce(&IoHandle) -> bool,
+) -> Option<SharedIoHandle> {
+    let mut table = handles().lock().unwrap();
+    if !table.get(&handle).is_some_and(|entry| {
+        let entry = &*entry.lock().unwrap();
+        matches(entry)
+    }) {
+        return None;
+    }
+    table.remove(&handle)
+}
+
+fn take_file_handle(handle: i64) -> Option<SharedIoHandle> {
+    take_handle_matching(handle, |entry| matches!(entry, IoHandle::File { .. }))
+}
+
+fn take_bufread_handle(handle: i64) -> Option<SharedIoHandle> {
+    take_handle_matching(handle, |entry| matches!(entry, IoHandle::BufRead(_)))
+}
+
+fn take_bufwrite_handle(handle: i64) -> Option<SharedIoHandle> {
+    take_handle_matching(handle, |entry| matches!(entry, IoHandle::BufWrite(_)))
+}
+
+fn shared_handle(handle: i64) -> Option<SharedIoHandle> {
+    handles().lock().unwrap().get(&handle).cloned()
 }
 
 #[unsafe(no_mangle)]
@@ -762,30 +811,51 @@ pub extern "C" fn olive_file_open(path: i64, mode: i64) -> i64 {
     } else {
         olive_str_from_ptr(mode)
     };
-    let file = match mode_str.as_str() {
-        "w" => std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path_str),
-        "a" => std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path_str),
-        "r+" => std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path_str),
-        "w+" => std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path_str),
-        _ => std::fs::OpenOptions::new().read(true).open(&path_str),
+    let (file, readable) = match mode_str.as_str() {
+        "r" | "rb" => (std::fs::OpenOptions::new().read(true).open(&path_str), true),
+        "w" | "wb" => (
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path_str),
+            false,
+        ),
+        "a" | "ab" => (
+            std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path_str),
+            false,
+        ),
+        "r+" | "rb+" => (
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path_str),
+            true,
+        ),
+        "w+" | "wb+" => (
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path_str),
+            true,
+        ),
+        "a+" | "ab+" => (
+            std::fs::OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(&path_str),
+            true,
+        ),
+        _ => return 0,
     };
     match file {
-        Ok(f) => register_handle(IoHandle::File(f)),
+        Ok(file) => register_handle(IoHandle::File { file, readable }),
         Err(_) => 0,
     }
 }
@@ -793,14 +863,27 @@ pub extern "C" fn olive_file_open(path: i64, mode: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_close(handle: i64) {
     if handle != 0 {
-        take_handle(handle);
+        take_file_handle(handle);
     }
 }
 
 fn with_file<R>(handle: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<R> {
-    let mut table = handles().lock().unwrap();
-    match table.get_mut(&handle) {
-        Some(IoHandle::File(file)) => Some(f(file)),
+    let entry = shared_handle(handle)?;
+    let mut guard = entry.lock().unwrap();
+    match &mut *guard {
+        IoHandle::File { file, .. } => Some(f(file)),
+        _ => None,
+    }
+}
+
+fn with_readable_file<R>(handle: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<R> {
+    let entry = shared_handle(handle)?;
+    let mut guard = entry.lock().unwrap();
+    match &mut *guard {
+        IoHandle::File {
+            file,
+            readable: true,
+        } => Some(f(file)),
         _ => None,
     }
 }
@@ -814,29 +897,27 @@ pub extern "C" fn olive_file_read_n(handle: i64, n: i64) -> i64 {
         return 0;
     }
     if n == 0 {
-        return match with_file(handle, |_| ()) {
+        return match with_readable_file(handle, |_| ()) {
             Some(()) => olive_str_internal(""),
             None => 0,
         };
     }
     let want = n as usize;
-    let mut buf = vec![0u8; want];
-    match with_file(handle, |file| {
+    match with_readable_file(handle, |file| {
+        let mut buf = vec![0u8; want];
         let mut total = 0usize;
         while total < want {
             match file.read(&mut buf[total..]) {
                 Ok(0) => break,
                 Ok(read) => total += read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => return Err(()),
             }
         }
-        Ok(total)
+        buf.truncate(total);
+        Ok(String::from_utf8_lossy(&buf).into_owned())
     }) {
-        Some(Ok(total)) => {
-            buf.truncate(total);
-            let s = String::from_utf8_lossy(&buf).into_owned();
-            olive_str_internal(&s)
-        }
+        Some(Ok(text)) => olive_str_internal(&text),
         Some(Err(())) | None => 0,
     }
 }
@@ -846,31 +927,43 @@ pub extern "C" fn olive_file_read_n(handle: i64, n: i64) -> i64 {
 /// word through the public `str` return ABI.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_read_all(handle: i64) -> i64 {
-    if handle == 0 {
+    let Some(entry) = shared_handle(handle) else {
         crate::panic::abort("cannot read from a closed file", None);
-    }
-    let size = match with_file(handle, |file| file.seek(SeekFrom::End(0))) {
-        Some(Ok(size)) => match i64::try_from(size) {
-            Ok(size) => size,
-            Err(_) => crate::panic::abort("file is too large to read", None),
-        },
-        Some(Err(_)) => crate::panic::abort("cannot determine file size", None),
-        None => crate::panic::abort("cannot read from a closed file", None),
     };
-    if size > MAX_READ_BYTES as i64 {
+    let mut guard = entry.lock().unwrap();
+    let IoHandle::File {
+        file,
+        readable: true,
+    } = &mut *guard
+    else {
+        crate::panic::abort("file is not readable", None);
+    };
+
+    let size = match file.seek(SeekFrom::End(0)) {
+        Ok(size) => size,
+        Err(_) => crate::panic::abort("cannot determine file size", None),
+    };
+    let size = usize::try_from(size)
+        .unwrap_or_else(|_| crate::panic::abort("file is too large to read", None));
+    if size > MAX_READ_BYTES {
         crate::panic::abort("file exceeds the maximum readable size", None);
     }
-    if !matches!(
-        with_file(handle, |file| file.seek(SeekFrom::Start(0))),
-        Some(Ok(0))
-    ) {
+    if file.seek(SeekFrom::Start(0)).is_err() {
         crate::panic::abort("cannot rewind file before reading", None);
     }
-    let data = olive_file_read_n(handle, size);
-    if data == 0 {
-        crate::panic::abort("file read failed", None);
+
+    let mut buf = vec![0u8; size];
+    let mut total = 0usize;
+    while total < size {
+        match file.read(&mut buf[total..]) {
+            Ok(0) => crate::panic::abort("file changed while being read", None),
+            Ok(read) => total += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => crate::panic::abort("file read failed", None),
+        }
     }
-    data
+    let text = String::from_utf8_lossy(&buf);
+    olive_str_internal(&text)
 }
 
 const MAX_READ_BYTES: usize = 1 << 30;
@@ -888,19 +981,35 @@ pub extern "C" fn olive_file_write_str(handle: i64, data: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_file_append_str(handle: i64, data_ptr: i64) -> i64 {
+    if handle == 0 || data_ptr == 0 {
+        return 0;
+    }
+    let data = olive_str_from_ptr(data_ptr);
+    match with_file(handle, |file| {
+        file.seek(SeekFrom::End(0))?;
+        file.write_all(data.as_bytes())
+    }) {
+        Some(Ok(())) => 1,
+        _ => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_file_seek(handle: i64, offset: i64, whence: i64) -> i64 {
     if handle == 0 {
         return -1;
     }
     let pos = match whence {
-        1 => SeekFrom::Current(offset),
-        2 => SeekFrom::End(offset),
-        _ => {
+        0 => {
             if offset < 0 {
                 return -1;
             }
             SeekFrom::Start(offset as u64)
         }
+        1 => SeekFrom::Current(offset),
+        2 => SeekFrom::End(offset),
+        _ => return -1,
     };
     match with_file(handle, |file| file.seek(pos)) {
         Some(Ok(new_pos)) => new_pos as i64,
@@ -978,10 +1087,12 @@ pub extern "C" fn olive_bufread_line(br: i64) -> i64 {
     if br == 0 {
         return 0;
     }
-    let mut table = handles().lock().unwrap();
-    let reader = match table.get_mut(&br) {
-        Some(IoHandle::BufRead(r)) => r,
-        _ => return 0,
+    let Some(entry) = shared_handle(br) else {
+        return 0;
+    };
+    let mut guard = entry.lock().unwrap();
+    let IoHandle::BufRead(reader) = &mut *guard else {
+        return 0;
     };
     match read_line_trimmed(reader) {
         LineRead::Line(line) => olive_str_internal(&line),
@@ -993,7 +1104,7 @@ pub extern "C" fn olive_bufread_line(br: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_bufread_close(br: i64) {
     if br != 0 {
-        take_handle(br);
+        take_bufread_handle(br);
     }
 }
 
@@ -1016,16 +1127,17 @@ pub extern "C" fn olive_bufwrite_write(bw: i64, data: i64) -> i64 {
     }
     use std::io::Write;
     let text = olive_str_from_ptr(data);
-    let mut table = handles().lock().unwrap();
-    match table.get_mut(&bw) {
-        Some(IoHandle::BufWrite(w)) => {
-            if w.write_all(text.as_bytes()).is_ok() {
-                1
-            } else {
-                0
-            }
-        }
-        _ => 0,
+    let Some(entry) = shared_handle(bw) else {
+        return 0;
+    };
+    let mut guard = entry.lock().unwrap();
+    let IoHandle::BufWrite(writer) = &mut *guard else {
+        return 0;
+    };
+    if writer.write_all(text.as_bytes()).is_ok() {
+        1
+    } else {
+        0
     }
 }
 
@@ -1035,23 +1147,20 @@ pub extern "C" fn olive_bufwrite_flush(bw: i64) -> i64 {
         return 0;
     }
     use std::io::Write;
-    let mut table = handles().lock().unwrap();
-    match table.get_mut(&bw) {
-        Some(IoHandle::BufWrite(w)) => {
-            if w.flush().is_ok() {
-                1
-            } else {
-                0
-            }
-        }
-        _ => 0,
-    }
+    let Some(entry) = shared_handle(bw) else {
+        return 0;
+    };
+    let mut guard = entry.lock().unwrap();
+    let IoHandle::BufWrite(writer) = &mut *guard else {
+        return 0;
+    };
+    if writer.flush().is_ok() { 1 } else { 0 }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_bufwrite_close(bw: i64) {
     if bw != 0 {
-        take_handle(bw);
+        take_bufwrite_handle(bw);
     }
 }
 
@@ -1481,7 +1590,7 @@ mod tests {
         let bw = olive_bufwrite_open(path);
         assert_ne!(bw, 0);
         assert_eq!(olive_bufwrite_write(bw, make_str("unflushed")), 1);
-        drop(take_handle(bw));
+        drop(take_bufwrite_handle(bw));
         assert_eq!(from_ptr(olive_file_read(path)), "unflushed");
         olive_file_delete(path);
     }

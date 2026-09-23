@@ -9,18 +9,54 @@ use crate::StableVec;
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Condvar, Mutex, OnceLock,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 struct OliveTask {
     sm_future: i64,
     queued: AtomicBool,
-    driving: AtomicBool,
     done: AtomicBool,
-    pending_result: Mutex<Option<i64>>,
+    retired: AtomicBool,
+    pending_child: Mutex<Option<Arc<OliveTask>>>,
     completions: Mutex<Vec<Arc<Completion>>>,
     sm_waiters: Mutex<Vec<Arc<OliveTask>>>,
     slabs: Mutex<Option<Box<crate::slab::SlabSet>>>,
+}
+
+struct SmPollGuard(i64);
+
+impl Drop for SmPollGuard {
+    fn drop(&mut self) {
+        unsafe { &(*(self.0 as *const OliveSmFuture)).poll_lock }.store(false, Ordering::Release);
+    }
+}
+
+fn try_acquire_sm_poll(future: i64) -> Option<SmPollGuard> {
+    let acquired = unsafe { &(*(future as *const OliveSmFuture)).poll_lock }
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok();
+    acquired.then_some(SmPollGuard(future))
+}
+
+impl Drop for OliveTask {
+    fn drop(&mut self) {
+        if !self.retired.load(Ordering::Acquire) {
+            return;
+        }
+        let owns_heap_future = sm_live().lock().unwrap().contains(&self.sm_future);
+        if !owns_heap_future {
+            return;
+        }
+        unsafe {
+            let future = &mut *(self.sm_future as *mut OliveSmFuture);
+            release_sm_frame(future, false);
+            let cached = future.cached;
+            let result_desc = future.result_desc;
+            free_cached_value(cached, result_desc);
+            olive_sm_free(self.sm_future, std::mem::size_of::<OliveSmFuture>() as i64);
+        }
+    }
 }
 
 struct Completion {
@@ -34,7 +70,7 @@ struct OliveExecutor {
     task_map: Mutex<std::collections::HashMap<i64, Arc<OliveTask>>>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum DriveOutcome {
     Completed,
     Rerun,
@@ -77,9 +113,12 @@ fn executor_worker(ex: Arc<OliveExecutor>) {
             }
         };
         task.queued.store(false, Ordering::SeqCst);
-        let delivered = task.pending_result.lock().unwrap().take();
-        if let Some(v) = delivered {
-            executor_complete_waker(&ex, &task, v);
+        if task.done.load(Ordering::Acquire) {
+            continue;
+        }
+        let completed_child = task.pending_child.lock().unwrap().take();
+        if let Some(completed_child) = completed_child {
+            executor_complete_waker(&ex, &task, completed_child);
         } else {
             match executor_drive(&ex, &task) {
                 DriveOutcome::Completed | DriveOutcome::Parked => {}
@@ -108,23 +147,42 @@ fn executor_enqueue(ex: &OliveExecutor, task: &Arc<OliveTask>) -> bool {
     }
 }
 
-fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<OliveTask> {
-    let mut map = ex.task_map.lock().unwrap();
+fn executor_get_or_create_task_locked(
+    map: &mut std::collections::HashMap<i64, Arc<OliveTask>>,
+    sm_future_ptr: i64,
+) -> Arc<OliveTask> {
     if let Some(t) = map.get(&sm_future_ptr) {
         return t.clone();
     }
     let t = Arc::new(OliveTask {
         sm_future: sm_future_ptr,
         queued: AtomicBool::new(false),
-        driving: AtomicBool::new(false),
         done: AtomicBool::new(false),
-        pending_result: Mutex::new(None),
+        retired: AtomicBool::new(false),
+        pending_child: Mutex::new(None),
         completions: Mutex::new(Vec::new()),
         sm_waiters: Mutex::new(Vec::new()),
         slabs: Mutex::new(None),
     });
     map.insert(sm_future_ptr, t.clone());
     t
+}
+
+#[cfg(test)]
+fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<OliveTask> {
+    let mut map = ex.task_map.lock().unwrap();
+    executor_get_or_create_task_locked(&mut map, sm_future_ptr)
+}
+
+fn executor_get_or_create_active_task(
+    ex: &OliveExecutor,
+    sm_future_ptr: i64,
+) -> Option<Arc<OliveTask>> {
+    let mut map = ex.task_map.lock().unwrap();
+    if unsafe { &(*(sm_future_ptr as *const OliveSmFuture)).terminal }.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(executor_get_or_create_task_locked(&mut map, sm_future_ptr))
 }
 
 /// Drives one poll of `task` on the calling worker. The `driving` flag makes a
@@ -140,27 +198,28 @@ fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<Ol
 /// normal completion path so no parent hangs. Frame memory is reclaimed by
 /// the completion path; task slabs are dropped there as usual.
 fn task_cancelled(task: &Arc<OliveTask>) -> bool {
-    unsafe { &*(task.sm_future as *const OliveSmFuture) }.cancelled != 0
+    unsafe { &*(task.sm_future as *const OliveSmFuture) }
+        .cancelled
+        .load(Ordering::Acquire)
+        != 0
 }
 
 fn complete_cancelled(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcome {
+    unregister_from_child(ex, task);
     let frame = unsafe { &*(task.sm_future as *const OliveSmFuture) }.frame;
-    unsafe {
-        *(frame as *mut i64) = -1;
-        *((frame as *mut i64).add(1)) = 0;
+    if frame != 0 {
+        unsafe {
+            *(frame as *mut i64) = -1;
+            *((frame as *mut i64).add(1)) = 0;
+        }
     }
-    task.driving.store(false, Ordering::SeqCst);
     executor_complete(ex, task, 0)
 }
 
 fn executor_drive(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcome {
-    if task
-        .driving
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(_poll_guard) = try_acquire_sm_poll(task.sm_future) else {
         return DriveOutcome::Rerun;
-    }
+    };
 
     if task_cancelled(task) {
         return complete_cancelled(ex, task);
@@ -181,29 +240,33 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcom
     let result = poll_fn(sf.frame);
 
     crate::slab::ACTIVE_SLABS.set(old_active);
-    task.driving.store(false, Ordering::SeqCst);
-
-    if unsafe { *(sf.frame as *const i64) } == -1 {
+    let outcome = if unsafe { *(sf.frame as *const i64) } == -1 {
         return executor_complete(ex, task, result);
+    } else {
+        park_after_pending(ex, task, sf)
+    };
+    if task.pending_child.lock().unwrap().is_some() {
+        DriveOutcome::Rerun
+    } else {
+        outcome
     }
-    park_after_pending(ex, task, sf)
 }
 
 /// Resumes a parent machine whose awaited sub-machine finished while the
-/// parent sat queued, delivering the sub-task's cached result word (already
-/// relocated out of the sub-task's arena before it was dropped). The resumed
-/// poll may run to completion or park on a further await; both are handled.
-fn executor_complete_waker(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64) {
-    if task
-        .driving
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+/// parent sat queued. Holding `completed_child` pins its relocated cached
+/// result until the parent copies that value. The resumed poll may run to
+/// completion or park on a further await; both are handled.
+fn executor_complete_waker(
+    ex: &Arc<OliveExecutor>,
+    task: &Arc<OliveTask>,
+    completed_child: Arc<OliveTask>,
+) {
+    let Some(_poll_guard) = try_acquire_sm_poll(task.sm_future) else {
         // Mid-poll elsewhere; restore and let that poll's worker pick it up
         // on its next dequeue.
-        *task.pending_result.lock().unwrap() = Some(result);
+        *task.pending_child.lock().unwrap() = Some(completed_child);
         return;
-    }
+    };
 
     if task_cancelled(task) {
         complete_cancelled(ex, task);
@@ -225,13 +288,95 @@ fn executor_complete_waker(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, resul
     let final_result = poll_fn(sf.frame);
 
     crate::slab::ACTIVE_SLABS.set(old_active);
-    task.driving.store(false, Ordering::SeqCst);
-
     if unsafe { *(sf.frame as *const i64) } == -1 {
         executor_complete(ex, task, final_result);
         return;
     }
-    park_after_pending(ex, task, sf);
+    let outcome = park_after_pending(ex, task, sf);
+    if task.pending_child.lock().unwrap().is_some() || matches!(outcome, DriveOutcome::Rerun) {
+        executor_enqueue(ex, task);
+    }
+}
+
+fn wait_for_plain_child(task: &Arc<OliveTask>, shared: &FutureShared) -> bool {
+    let mut state = shared.state.lock().unwrap();
+    loop {
+        match &*state {
+            FutureState::Ready(_) => return true,
+            FutureState::Pending => {
+                if task_cancelled(task) {
+                    return false;
+                }
+                let (next, _) = shared
+                    .cvar
+                    .wait_timeout(state, Duration::from_millis(10))
+                    .unwrap();
+                state = next;
+            }
+        }
+    }
+}
+
+fn park_combinator_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, child_ptr: i64) -> bool {
+    if child_ptr == 0 {
+        return false;
+    }
+    let kind = unsafe { *(child_ptr as *const i64) };
+    match kind {
+        KIND_FUTURE => {
+            let child = unsafe { &*(child_ptr as *const OliveFuture) };
+            let shared = unsafe { &*(child.shared as *const FutureShared) };
+            wait_for_plain_child(task, shared)
+        }
+        KIND_SM_FUTURE => {
+            let Some(child) = executor_get_or_create_active_task(ex, child_ptr) else {
+                return false;
+            };
+            if child.done.load(Ordering::Acquire) {
+                return false;
+            }
+            if child.pending_child.lock().unwrap().take().is_some() {
+                *task.pending_child.lock().unwrap() = Some(child.clone());
+                return false;
+            }
+            let mut waiters = child.sm_waiters.lock().unwrap();
+            if child.done.load(Ordering::Acquire)
+                || waiters.iter().any(|waiter| Arc::ptr_eq(waiter, task))
+            {
+                return false;
+            }
+            waiters.push(task.clone());
+            drop(waiters);
+            executor_enqueue(ex, &child);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn park_combinator(
+    ex: &Arc<OliveExecutor>,
+    task: &Arc<OliveTask>,
+    futures_list: i64,
+) -> DriveOutcome {
+    let count = future_list_len(futures_list);
+    if count == 0 {
+        return DriveOutcome::Rerun;
+    }
+    let list = unsafe { &*(futures_list as *const StableVec) };
+    let mut parked = false;
+    for index in 0..count {
+        let child_ptr = unsafe { *list.ptr.add(index) };
+        parked |= park_combinator_child(ex, task, child_ptr);
+        if task_cancelled(task) {
+            break;
+        }
+    }
+    if parked {
+        DriveOutcome::Parked
+    } else {
+        DriveOutcome::Rerun
+    }
 }
 
 /// Parks a task whose poll just returned Pending: blocks on a plain future's
@@ -244,6 +389,15 @@ fn park_after_pending(
     task: &Arc<OliveTask>,
     sf: &OliveSmFuture,
 ) -> DriveOutcome {
+    if sf.poll_fn == olive_gather_poll as *const () as usize as i64 {
+        let list = unsafe { &*(sf.frame as *const GatherFrame) }.futures_list;
+        return park_combinator(ex, task, list);
+    }
+    if sf.poll_fn == olive_select_poll as *const () as usize as i64 {
+        let list = unsafe { &*(sf.frame as *const SelectFrame) }.futures_list;
+        return park_combinator(ex, task, list);
+    }
+
     let sub_future = unsafe { *((sf.frame + 8) as *const i64) };
     if sub_future == 0 {
         return DriveOutcome::Rerun;
@@ -269,11 +423,12 @@ fn park_after_pending(
             DriveOutcome::Rerun
         }
         KIND_SM_FUTURE => {
-            let sub_task = executor_get_or_create_task(ex, sub_future);
+            let Some(sub_task) = executor_get_or_create_active_task(ex, sub_future) else {
+                return DriveOutcome::Rerun;
+            };
             // Already finished but its wakeup has not been consumed yet.
-            let delivered = sub_task.pending_result.lock().unwrap().take();
-            if let Some(v) = delivered {
-                *task.pending_result.lock().unwrap() = Some(v);
+            if sub_task.pending_child.lock().unwrap().take().is_some() {
+                *task.pending_child.lock().unwrap() = Some(sub_task.clone());
                 return DriveOutcome::Rerun;
             }
             // Check-and-push under the waiters lock, mirrored by the done
@@ -293,6 +448,52 @@ fn park_after_pending(
             DriveOutcome::Parked
         }
         _ => DriveOutcome::Rerun,
+    }
+}
+
+fn unregister_from_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) {
+    let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
+    if sf.frame == 0 {
+        return;
+    }
+    if sf.poll_fn == olive_gather_poll as *const () as usize as i64 {
+        let list_ptr = unsafe { (*(sf.frame as *const GatherFrame)).futures_list };
+        if list_ptr != 0 {
+            let list = unsafe { &*(list_ptr as *const StableVec) };
+            unregister_from_child_list(ex, task, list);
+        }
+        return;
+    }
+    if sf.poll_fn == olive_select_poll as *const () as usize as i64 {
+        let list_ptr = unsafe { (*(sf.frame as *const SelectFrame)).futures_list };
+        if list_ptr != 0 {
+            let list = unsafe { &*(list_ptr as *const StableVec) };
+            unregister_from_child_list(ex, task, list);
+        }
+        return;
+    }
+    let child_ptr = unsafe { *((sf.frame + 8) as *const i64) };
+    unregister_one_child(ex, task, child_ptr);
+}
+
+fn unregister_from_child_list(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, list: &StableVec) {
+    for index in 0..list.len {
+        let child_ptr = unsafe { *list.ptr.add(index) };
+        unregister_one_child(ex, task, child_ptr);
+    }
+}
+
+fn unregister_one_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, child_ptr: i64) {
+    if child_ptr == 0 || unsafe { *(child_ptr as *const i64) } != KIND_SM_FUTURE {
+        return;
+    }
+    let child = ex.task_map.lock().unwrap().get(&child_ptr).cloned();
+    if let Some(child) = child {
+        child
+            .sm_waiters
+            .lock()
+            .unwrap()
+            .retain(|waiter| !Arc::ptr_eq(waiter, task));
     }
 }
 
@@ -317,6 +518,15 @@ fn executor_complete(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64
     };
     crate::slab::ACTIVE_SLABS.set(old_active);
     drop(slabs);
+    executor_publish(ex, task, delivered)
+}
+
+fn executor_publish(
+    ex: &Arc<OliveExecutor>,
+    task: &Arc<OliveTask>,
+    delivered: i64,
+) -> DriveOutcome {
+    let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
     // Ownership handoff on completion: the frame transfers to the executor,
     // which caches the arena-independent result in the handle for later
     // re-polls (`olive_sm_poll` from gather/select, or a late await) and
@@ -325,28 +535,38 @@ fn executor_complete(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64
     // The handle stays owned by the creator, released via `olive_free_future`.
     let frame = sf.frame;
     let future_ptr = task.sm_future;
+    let mut map = ex.task_map.lock().unwrap();
     unsafe {
-        *((frame + 8) as *mut i64) = delivered;
         let f = &mut *(future_ptr as *mut OliveSmFuture);
         f.cached = delivered;
-        if sm_live().lock().unwrap().contains(&frame) {
-            release_sm_frame(f, true);
+        if frame != 0 {
+            *((frame + 8) as *mut i64) = delivered;
+            if sm_live().lock().unwrap().contains(&frame) {
+                release_sm_frame(f, true);
+            }
         }
+        f.terminal.store(true, Ordering::Release);
     };
 
-    for c in std::mem::take(&mut *task.completions.lock().unwrap()) {
-        *c.result.lock().unwrap() = Some(delivered);
-        c.cvar.notify_all();
-    }
     let waiters = {
+        // Blocking waiters own their published values. Their handle may be
+        // retired as soon as terminal state becomes visible.
+        for c in std::mem::take(&mut *task.completions.lock().unwrap()) {
+            let completion_result = copy_future_value_global(delivered, sf.result_desc);
+            *c.result.lock().unwrap() = Some(completion_result);
+            c.cvar.notify_all();
+        }
         let mut guard = task.sm_waiters.lock().unwrap();
         task.done.store(true, Ordering::SeqCst);
-        std::mem::take(&mut *guard)
+        let waiters = std::mem::take(&mut *guard);
+        drop(guard);
+        map.remove(&task.sm_future);
+        waiters
     };
-    ex.task_map.lock().unwrap().remove(&task.sm_future);
+    drop(map);
     *task.slabs.lock().unwrap() = None;
     for w in waiters {
-        *w.pending_result.lock().unwrap() = Some(delivered);
+        *w.pending_child.lock().unwrap() = Some(task.clone());
         executor_enqueue(ex, &w);
     }
     DriveOutcome::Completed
@@ -357,10 +577,12 @@ struct OliveSmFuture {
     kind: i64,
     poll_fn: i64,
     frame: i64,
-    cancelled: i64,
+    cancelled: AtomicI64,
     result_desc: i64,
     frame_size: i64,
     cached: i64,
+    terminal: AtomicBool,
+    poll_lock: AtomicBool,
 }
 
 /// Allocation counters for state machine frames and handles, backing the
@@ -482,6 +704,7 @@ fn cache_sm_result(future: i64, result: i64) -> i64 {
     if frame != 0 && sm_live().lock().unwrap().contains(&frame) {
         unsafe { release_sm_frame(f, true) };
     }
+    f.terminal.store(true, Ordering::Release);
     delivered
 }
 
@@ -489,38 +712,63 @@ fn cache_sm_result(future: i64, result: i64) -> i64 {
 /// A pending poll leaves the output word untouched.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
-    let (result, result_desc) = if future == 0 {
-        (Some(0), 0)
-    } else if unsafe { *(future as *const i64) } == KIND_SM_FUTURE {
+    if future == 0 {
+        unsafe { *(output as *mut i64) = 0 };
+        return 1;
+    }
+
+    if unsafe { *(future as *const i64) } == KIND_SM_FUTURE {
+        // Declared before the poll guard so a retired task outlives the copy
+        // taken from its cached result below.
+        let mut _completed_task_pin = None;
+        let Some(_poll_guard) = try_acquire_sm_poll(future) else {
+            return 0;
+        };
         let f = unsafe { &*(future as *const OliveSmFuture) };
-        if f.frame == 0 {
+        let (result, result_desc) = if f.terminal.load(Ordering::Acquire) {
             (Some(f.cached), f.result_desc)
-        } else if f.cancelled != 0 && unsafe { *(f.frame as *const i64) } != -1 {
+        } else if f.cancelled.load(Ordering::Acquire) != 0
+            && unsafe { *(f.frame as *const i64) } != -1
+        {
             (None, f.result_desc)
         } else {
             let poll_fn: extern "C" fn(i64) -> i64 =
                 unsafe { std::mem::transmute(f.poll_fn as usize) };
             let result = poll_fn(f.frame);
             if unsafe { *(f.frame as *const i64) } == -1 {
-                (Some(cache_sm_result(future, result)), f.result_desc)
+                let result_desc = f.result_desc;
+                let cached = cache_sm_result(future, result);
+                if let Some(ex) = EXECUTOR.get() {
+                    let task = ex.task_map.lock().unwrap().get(&future).cloned();
+                    if let Some(task) = task {
+                        _completed_task_pin = Some(task.clone());
+                        executor_publish(ex, &task, cached);
+                    }
+                }
+                (Some(cached), result_desc)
             } else {
                 (None, f.result_desc)
             }
-        }
-    } else {
-        let f = unsafe { &*(future as *const OliveFuture) };
-        let shared = unsafe { &*(f.shared as *const FutureShared) };
-        let result = {
-            let state = shared.state.lock().unwrap();
-            match &*state {
-                FutureState::Ready(v) => Some(*v),
-                FutureState::Pending => None,
-            }
         };
-        (result, shared.result_desc)
+        if let Some(value) = result {
+            let value = copy_future_value(value, result_desc);
+            unsafe { *(output as *mut i64) = value };
+            return 1;
+        }
+        return 0;
+    }
+
+    let f = unsafe { &*(future as *const OliveFuture) };
+    let shared = unsafe { &*(f.shared as *const FutureShared) };
+    let result = {
+        let state = shared.state.lock().unwrap();
+        match &*state {
+            FutureState::Ready(v) => Some(*v),
+            FutureState::Pending => None,
+        }
     };
     if let Some(value) = result {
-        let value = copy_future_value(value, result_desc);
+        let value = copy_future_value(value, shared.result_desc);
         unsafe { *(output as *mut i64) = value };
         1
     } else {
@@ -537,6 +785,15 @@ struct FutureShared {
     state: Mutex<FutureState>,
     result_desc: i64,
     cvar: Condvar,
+}
+
+impl Drop for FutureShared {
+    fn drop(&mut self) {
+        let state = self.state.get_mut().unwrap();
+        if let FutureState::Ready(value) = *state {
+            free_cached_value(value, self.result_desc);
+        }
+    }
 }
 
 #[repr(C)]
@@ -572,10 +829,21 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
             cvar: Condvar::new(),
         });
         let ex = olive_executor();
-        let task = executor_get_or_create_task(ex, future);
-        task.completions.lock().unwrap().push(completion.clone());
+        let task = {
+            let mut map = ex.task_map.lock().unwrap();
+            let state = unsafe { &*(future as *const OliveSmFuture) };
+            if state.terminal.load(Ordering::Acquire) {
+                return copy_future_value_global(state.cached, state.result_desc);
+            }
+            let task = executor_get_or_create_task_locked(&mut map, future);
+            if task.done.load(Ordering::Acquire) {
+                return copy_future_value_global(state.cached, state.result_desc);
+            }
+            task.completions.lock().unwrap().push(completion.clone());
+            task
+        };
         executor_enqueue(ex, &task);
-        let result = {
+        {
             let mut r = completion.result.lock().unwrap();
             loop {
                 match *r {
@@ -583,9 +851,7 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
                     None => r = completion.cvar.wait(r).unwrap(),
                 }
             }
-        };
-        let result_desc = unsafe { (*(future as *const OliveSmFuture)).result_desc };
-        copy_future_value_global(result, result_desc)
+        }
     } else {
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
@@ -657,6 +923,20 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
     }
     let kind = unsafe { *(future as *const i64) };
     if kind == KIND_SM_FUTURE {
+        let task = EXECUTOR
+            .get()
+            .and_then(|ex| ex.task_map.lock().unwrap().get(&future).cloned());
+        if let (Some(ex), Some(task)) = (EXECUTOR.get(), task) {
+            task.retired.store(true, Ordering::Release);
+            unsafe {
+                (*(future as *const OliveSmFuture))
+                    .cancelled
+                    .store(1, Ordering::Release);
+            }
+            executor_enqueue(ex, &task);
+            return 0;
+        }
+
         let (cached, result_desc) = unsafe {
             let f = &mut *(future as *mut OliveSmFuture);
             let cached = f.cached;
@@ -669,16 +949,7 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
     } else {
         let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
         let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
-        let result = {
-            let state = shared.state.lock().unwrap();
-            match &*state {
-                FutureState::Ready(value) => Some(*value),
-                FutureState::Pending => None,
-            }
-        };
-        if let Some(value) = result {
-            free_cached_value(value, shared.result_desc);
-        }
+        drop(shared);
     }
     0
 }
@@ -768,6 +1039,26 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
     Box::into_raw(f) as i64
 }
 
+unsafe fn retain_plain_future(future: i64) -> i64 {
+    if unsafe { *(future as *const i64) } == KIND_FUTURE {
+        let f = unsafe { &*(future as *const OliveFuture) };
+        unsafe { Arc::increment_strong_count(f.shared as *const FutureShared) };
+        return Box::into_raw(Box::new(OliveFuture {
+            kind: KIND_FUTURE,
+            shared: f.shared,
+        })) as i64;
+    }
+    future
+}
+
+unsafe fn release_plain_future_ref(future: i64) {
+    if future != 0 && unsafe { *(future as *const i64) } == KIND_FUTURE {
+        let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
+        unsafe { Arc::decrement_strong_count(f.shared as *const FutureShared) };
+        drop(f);
+    }
+}
+
 fn future_list_len(list_ptr: i64) -> usize {
     if list_ptr == 0
         || !crate::slab::ptr_is_slab_body(list_ptr)
@@ -779,7 +1070,18 @@ fn future_list_len(list_ptr: i64) -> usize {
     if kind != crate::KIND_LIST && kind != crate::KIND_ANY_LIST {
         return 0;
     }
-    unsafe { (*(list_ptr as *const StableVec)).len }
+    let list = unsafe { &*(list_ptr as *const StableVec) };
+    for index in 0..list.len {
+        let child = unsafe { *list.ptr.add(index) };
+        if child <= 0x1000 || child & 7 != 0 {
+            return 0;
+        }
+        let kind = unsafe { *(child as *const i64) };
+        if !matches!(kind, KIND_FUTURE | KIND_SM_FUTURE) {
+            return 0;
+        }
+    }
+    list.len
 }
 
 #[repr(C)]
@@ -788,6 +1090,7 @@ struct GatherFrame {
     cached_result: i64,
     futures_list: i64,
     results: i64,
+    completed: Vec<u8>,
 }
 
 #[unsafe(no_mangle)]
@@ -809,9 +1112,14 @@ pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
 
     let mut any_pending = false;
     for (i, res) in results.iter_mut().enumerate().take(n) {
+        if f.completed[i] != 0 {
+            continue;
+        }
         let fut = unsafe { *list.ptr.add(i) };
         if olive_sm_poll(fut, res as *mut i64 as i64) == 0 {
             any_pending = true;
+        } else {
+            f.completed[i] = 1;
         }
     }
 
@@ -830,7 +1138,17 @@ pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
     let retained_list = if n == 0 {
         0
     } else {
-        crate::copy_typed::relocate_across_boundary(futures_list)
+        let source = unsafe { &*(futures_list as *const StableVec) };
+        crate::slab::with_escape_arena(|| {
+            let copy = crate::list::olive_list_new(n as i64);
+            for index in 0..n {
+                let child = unsafe { *source.ptr.add(index) };
+                crate::list::olive_list_set(copy, index as i64, unsafe {
+                    retain_plain_future(child)
+                });
+            }
+            copy
+        })
     };
     let results_list = crate::slab::with_escape_arena(|| crate::list::list_from_vec(vec![0; n]));
 
@@ -843,6 +1161,7 @@ pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
                 cached_result: 0,
                 futures_list: retained_list,
                 results: results_list,
+                completed: vec![0; n],
             },
         );
     }
@@ -855,10 +1174,12 @@ pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
                 kind: KIND_SM_FUTURE,
                 poll_fn: olive_gather_poll as *const () as usize as i64,
                 frame,
-                cancelled: 0,
+                cancelled: AtomicI64::new(0),
                 result_desc: 0,
                 frame_size: std::mem::size_of::<GatherFrame>() as i64,
                 cached: 0,
+                terminal: AtomicBool::new(false),
+                poll_lock: AtomicBool::new(false),
             },
         );
     }
@@ -880,6 +1201,10 @@ unsafe fn release_future_list_shell(list: i64) {
         return;
     }
     unsafe {
+        let snapshot = &*(list as *const StableVec);
+        for index in 0..snapshot.len {
+            release_plain_future_ref(*snapshot.ptr.add(index));
+        }
         crate::list::settle_list_buffer(list);
         crate::list::free_list_slot_raw_with(list, Some(is_global));
     }
@@ -898,6 +1223,9 @@ unsafe fn release_sm_frame(f: &mut OliveSmFuture, result_transferred: bool) {
         unsafe { release_future_list_shell(gather.futures_list) };
         gather.futures_list = 0;
         gather.results = 0;
+        unsafe {
+            std::ptr::drop_in_place(gather as *mut GatherFrame);
+        }
     } else if f.poll_fn == olive_select_poll as *const () as usize as i64 {
         let select = unsafe { &mut *(frame as *mut SelectFrame) };
         unsafe { release_future_list_shell(select.futures_list) };
@@ -937,7 +1265,15 @@ pub extern "C" fn olive_select(futures_list: i64) -> i64 {
     if n == 0 {
         return 0;
     }
-    let retained_list = crate::copy_typed::relocate_across_boundary(futures_list);
+    let source = unsafe { &*(futures_list as *const StableVec) };
+    let retained_list = crate::slab::with_escape_arena(|| {
+        let copy = crate::list::olive_list_new(n as i64);
+        for index in 0..n {
+            let child = unsafe { *source.ptr.add(index) };
+            crate::list::olive_list_set(copy, index as i64, unsafe { retain_plain_future(child) });
+        }
+        copy
+    });
     let frame = olive_sm_alloc(std::mem::size_of::<SelectFrame>() as i64);
     unsafe {
         std::ptr::write(
@@ -957,10 +1293,12 @@ pub extern "C" fn olive_select(futures_list: i64) -> i64 {
                 kind: KIND_SM_FUTURE,
                 poll_fn: olive_select_poll as *const () as usize as i64,
                 frame,
-                cancelled: 0,
+                cancelled: AtomicI64::new(0),
                 result_desc: 0,
                 frame_size: std::mem::size_of::<SelectFrame>() as i64,
                 cached: 0,
+                terminal: AtomicBool::new(false),
+                poll_lock: AtomicBool::new(false),
             },
         );
     }
@@ -975,7 +1313,7 @@ pub extern "C" fn olive_cancel_future(future: i64) -> i64 {
     let kind = unsafe { *(future as *const i64) };
     if kind == KIND_SM_FUTURE {
         let f = unsafe { &mut *(future as *mut OliveSmFuture) };
-        f.cancelled = 1;
+        f.cancelled.store(1, Ordering::Release);
         if let Some(ex) = EXECUTOR.get() {
             let task = ex.task_map.lock().unwrap().get(&future).cloned();
             if let Some(task) = task {
@@ -1090,6 +1428,7 @@ pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
     let mut state = shared.state.lock().unwrap();
     loop {
         if let FutureState::Ready(val) = *state {
+            *state = FutureState::Ready(0);
             return val;
         }
         state = shared.cvar.wait(state).unwrap();

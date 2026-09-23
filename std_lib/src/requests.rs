@@ -235,9 +235,12 @@ fn url_from_ptr(ptr: i64) -> String {
     if ptr == 0 {
         return String::new();
     }
-    let p = crate::string_slab::str_body(ptr);
-    let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) };
-    c_str.to_string_lossy().into_owned()
+    crate::olive_str_from_ptr(ptr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_http_str_is_null(value: i64) -> i64 {
+    (value == 0) as i64
 }
 
 #[unsafe(no_mangle)]

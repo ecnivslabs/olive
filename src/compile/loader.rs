@@ -65,6 +65,7 @@ fn find_pod_native(file_dir: &Path) -> Option<(PathBuf, manifest::Native)> {
             if let Ok(content) = fs::read_to_string(&pit_toml)
                 && let Ok(config) = toml::from_str::<manifest::Config>(&content)
                 && let Some(native) = config.native
+                && crate::tooling::manifest::validate_native_layout(&native).is_ok()
             {
                 result = Some((dir.clone(), native));
             }
@@ -98,7 +99,11 @@ fn resolve_pod_native(file_dir: &Path, spec: &str) -> Option<String> {
     if !artifact.is_file() {
         return None;
     }
-    let canon = artifact.canonicalize().unwrap_or(artifact);
+    let canon = artifact.canonicalize().ok()?;
+    let native_root = root.join("native").canonicalize().ok()?;
+    if !canon.starts_with(&native_root) {
+        return None;
+    }
     Some(canon.to_string_lossy().to_string())
 }
 

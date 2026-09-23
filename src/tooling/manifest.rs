@@ -67,17 +67,25 @@ pub fn safe_relative_path(value: &str, field: &str) -> Result<PathBuf, String> {
     }
     let mut relative = PathBuf::new();
     for component in path.components() {
-        let Component::Normal(name) = component else {
-            return Err(format!(
-                "{field} '{value}' must be a relative path without '.' or '..' components"
-            ));
-        };
-        if !crate::tooling::safe_archive_component(name) {
-            return Err(format!(
-                "{field} '{value}' contains an unsafe path component"
-            ));
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(name) => {
+                if !crate::tooling::safe_archive_component(name) {
+                    return Err(format!(
+                        "{field} '{value}' contains an unsafe path component"
+                    ));
+                }
+                relative.push(name);
+            }
+            _ => {
+                return Err(format!(
+                    "{field} '{value}' must be a relative path without '..' components"
+                ));
+            }
         }
-        relative.push(name);
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(format!("{field} '{value}' must not be empty"));
     }
     Ok(relative)
 }
@@ -127,16 +135,26 @@ pub fn validate_native_layout(native: &Native) -> Result<(), String> {
     Ok(())
 }
 
-pub fn validate_pod_layout(config: &Config, root: &Path) -> Result<(), String> {
+pub fn validate_pod_layout(config: &Config, _root: &Path) -> Result<(), String> {
     if let Some(pod) = &config.pod {
         crate::tooling::registry::validate_pod_name(&pod.name)?;
-        resolve_file_within(root, &pod.entry, "pod entry")?;
+        safe_relative_path(&pod.entry, "pod entry")?;
         for include in &pod.include {
-            resolve_existing_within(root, include, "pod include")?;
+            safe_relative_path(include, "pod include")?;
         }
     }
     if let Some(native) = &config.native {
         validate_native_layout(native)?;
+    }
+    Ok(())
+}
+
+pub fn validate_pod_files(config: &Config, root: &Path) -> Result<(), String> {
+    if let Some(pod) = &config.pod {
+        resolve_file_within(root, &pod.entry, "pod entry")?;
+        for include in &pod.include {
+            resolve_existing_within(root, include, "pod include")?;
+        }
     }
     Ok(())
 }

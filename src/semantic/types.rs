@@ -33,6 +33,7 @@ pub enum Type {
     Var(usize),
     Any,
     Never,
+    #[allow(dead_code)]
     Vector(Box<Type>, usize),
     Future(Box<Type>),
     PyObject,

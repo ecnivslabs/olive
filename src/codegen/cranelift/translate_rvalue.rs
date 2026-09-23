@@ -7,6 +7,8 @@ use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+pub(super) const STR_LITERAL_TAG: i64 = 5;
+
 /// Materialises a tagged Olive string pointer for an interned source location,
 /// or a null pointer when no location was recorded for the site.
 pub(super) fn loc_value<M: Module>(
@@ -18,7 +20,10 @@ pub(super) fn loc_value<M: Module>(
         Some(id) => {
             let local = module.declare_data_in_func(id, builder.func);
             let ptr = builder.ins().symbol_value(types::I64, local);
-            builder.ins().bor_imm(ptr, 1)
+            let body = builder
+                .ins()
+                .iadd_imm(ptr, super::setup::strings::STR_LITERAL_HEADER_BYTES);
+            builder.ins().bor_imm(body, STR_LITERAL_TAG)
         }
         None => builder.ins().iconst(types::I64, 0),
     }
@@ -42,7 +47,66 @@ pub(super) fn float_word_for_i64_slot(builder: &mut FunctionBuilder, val: Value)
     }
 }
 
-/// Reinterprets a container slot word holding float bits as a typed float
+pub(super) fn integer_cl_type(ty: &OliveType) -> Option<Type> {
+    match super::imports::concrete_ty(ty) {
+        OliveType::Int
+        | OliveType::I8
+        | OliveType::I16
+        | OliveType::I32
+        | OliveType::U8
+        | OliveType::U16
+        | OliveType::U32
+        | OliveType::U64
+        | OliveType::Usize
+        | OliveType::Bool => Some(super::imports::cl_type(ty)),
+        _ => None,
+    }
+}
+
+pub(super) fn coerce_integer_value(
+    builder: &mut FunctionBuilder,
+    value: Value,
+    target: Type,
+    unsigned: bool,
+) -> Value {
+    let current = builder.func.dfg.value_type(value);
+    if current == target {
+        return value;
+    }
+    let rank = |ty: Type| match ty {
+        types::I8 => 1u8,
+        types::I16 => 2,
+        types::I32 => 4,
+        types::I64 => 8,
+        _ => 0,
+    };
+    if current == types::I64 && target != types::I64 {
+        return builder.ins().ireduce(target, value);
+    }
+    if target == types::I64 {
+        return if unsigned {
+            builder.ins().uextend(types::I64, value)
+        } else {
+            builder.ins().sextend(types::I64, value)
+        };
+    }
+    if rank(current) > rank(target) {
+        builder.ins().ireduce(target, value)
+    } else if unsigned {
+        builder.ins().uextend(target, value)
+    } else {
+        builder.ins().sextend(target, value)
+    }
+}
+
+pub(super) fn widen_integer_value(
+    builder: &mut FunctionBuilder,
+    value: Value,
+    unsigned: bool,
+) -> Value {
+    coerce_integer_value(builder, value, types::I64, unsigned)
+}
+
 /// value. Slots hold f64 bits for `Float` and zero-extended f32 bits for
 /// `F32` (see `float_word_for_i64_slot`); every other shape passes through
 /// untouched so int and pointer slots keep their exact behavior.
@@ -98,25 +162,33 @@ pub(super) fn emit_bounds_check<M: Module>(
     idx: Value,
     len: Value,
     loc: Value,
+    unsigned: bool,
 ) -> Value {
     let ok = builder.create_block();
     let fail = builder.create_block();
-    // Negative indices wrap: idx = idx < 0 ? idx + len : idx
-    let is_neg = builder.ins().icmp_imm(IntCC::SignedLessThan, idx, 0);
-    let wrapped = builder.ins().iadd(idx, len);
-    let final_idx = builder.ins().select(is_neg, wrapped, idx);
+    let final_idx = if unsigned {
+        idx
+    } else {
+        // Negative indices wrap for signed Olive indices: idx < 0 ? idx + len : idx
+        let is_neg = builder.ins().icmp_imm(IntCC::SignedLessThan, idx, 0);
+        let wrapped = builder.ins().iadd(idx, len);
+        builder.ins().select(is_neg, wrapped, idx)
+    };
     let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, final_idx, len);
     builder.ins().brif(in_bounds, ok, &[], fail, &[]);
 
     builder.seal_block(fail);
     builder.switch_to_block(fail);
     let id = *func_ids
-        .get("__olive_bounds_fail")
-        .expect("missing __olive_bounds_fail");
+        .get(if unsigned {
+            "__olive_bounds_fail_unsigned"
+        } else {
+            "__olive_bounds_fail"
+        })
+        .expect("missing bounds failure helper");
     let f = module.declare_func_in_func(id, builder.func);
-    // Reports the index as written, not the wrapped one: -9 on a length-3 value
-    // is what the reader has to go find, and -6 appears nowhere in the source.
-    builder.ins().call(f, &[idx, len, loc]);
+    let diagnostic_idx = widen_integer_value(builder, idx, unsigned);
+    builder.ins().call(f, &[diagnostic_idx, len, loc]);
     builder.ins().trap(TrapCode::unwrap_user(1));
 
     builder.seal_block(ok);
@@ -137,7 +209,9 @@ pub(super) fn emit_div_zero_check<M: Module>(
 ) {
     let ok = builder.create_block();
     let fail = builder.create_block();
-    let nonzero = builder.ins().icmp_imm(IntCC::NotEqual, divisor, 0);
+    let divisor_type = builder.func.dfg.value_type(divisor);
+    let zero = builder.ins().iconst(divisor_type, 0);
+    let nonzero = builder.ins().icmp(IntCC::NotEqual, divisor, zero);
     builder.ins().brif(nonzero, ok, &[], fail, &[]);
 
     builder.seal_block(fail);
@@ -199,7 +273,12 @@ pub(super) fn emit_checked_arith<M: Module>(
         .expect("missing __olive_overflow_fail");
     let f = module.declare_func_in_func(id, builder.func);
     let kind_val = builder.ins().iconst(types::I64, kind);
-    builder.ins().call(f, &[kind_val, l, r, loc]);
+    let unsigned = matches!(kind, OVERFLOW_ADD_U | OVERFLOW_SUB_U | OVERFLOW_MUL_U);
+    let diagnostic_l = widen_integer_value(builder, l, unsigned);
+    let diagnostic_r = widen_integer_value(builder, r, unsigned);
+    builder
+        .ins()
+        .call(f, &[kind_val, diagnostic_l, diagnostic_r, loc]);
     builder.ins().trap(TrapCode::unwrap_user(1));
 
     builder.seal_block(ok);
@@ -224,8 +303,17 @@ pub(super) fn emit_signed_div_overflow_check<M: Module>(
 ) {
     let ok = builder.create_block();
     let fail = builder.create_block();
-    let is_min = builder.ins().icmp_imm(IntCC::Equal, dividend, i64::MIN);
-    let is_neg_one = builder.ins().icmp_imm(IntCC::Equal, divisor, -1);
+    let int_type = builder.func.dfg.value_type(dividend);
+    let min = match int_type {
+        types::I8 => i8::MIN as i64,
+        types::I16 => i16::MIN as i64,
+        types::I32 => i32::MIN as i64,
+        _ => i64::MIN,
+    };
+    let min_value = builder.ins().iconst(int_type, min);
+    let minus_one = builder.ins().iconst(int_type, -1);
+    let is_min = builder.ins().icmp(IntCC::Equal, dividend, min_value);
+    let is_neg_one = builder.ins().icmp(IntCC::Equal, divisor, minus_one);
     let both = builder.ins().band(is_min, is_neg_one);
     builder.ins().brif(both, fail, &[], ok, &[]);
 
@@ -236,7 +324,11 @@ pub(super) fn emit_signed_div_overflow_check<M: Module>(
         .expect("missing __olive_overflow_fail");
     let f = module.declare_func_in_func(id, builder.func);
     let kind_val = builder.ins().iconst(types::I64, kind);
-    builder.ins().call(f, &[kind_val, dividend, divisor, loc]);
+    let diagnostic_dividend = widen_integer_value(builder, dividend, false);
+    let diagnostic_divisor = widen_integer_value(builder, divisor, false);
+    builder
+        .ins()
+        .call(f, &[kind_val, diagnostic_dividend, diagnostic_divisor, loc]);
     builder.ins().trap(TrapCode::unwrap_user(1));
 
     builder.seal_block(ok);
@@ -256,7 +348,7 @@ fn load_and_extend(
             .ins()
             .load(word_ty, MemFlags::trusted(), ptr, offset);
 
-        let unsigned = matches!(ty_name, "u8" | "u16" | "u32" | "bool");
+        let unsigned = matches!(ty_name, "u8" | "u16" | "u32" | "u64" | "bool");
         let extended = if word_ty == types::I64 {
             word
         } else if unsigned {
@@ -270,7 +362,11 @@ fn load_and_extend(
         } else {
             extended
         };
-        let mask = (1i64 << bit_count) - 1;
+        let mask = if bit_count == 64 {
+            i64::MAX
+        } else {
+            (1i64 << bit_count) - 1
+        };
         let masked = builder.ins().band_imm(shifted, mask);
         if unsigned {
             return masked;
@@ -285,7 +381,7 @@ fn load_and_extend(
         if cl_ty == types::I64 || cl_ty == types::F64 || cl_ty == types::F32 {
             return raw;
         }
-        let unsigned = matches!(ty_name, "u8" | "u16" | "u32" | "bool");
+        let unsigned = matches!(ty_name, "u8" | "u16" | "u32" | "u64" | "bool");
         if unsigned {
             builder.ins().uextend(types::I64, raw)
         } else {
@@ -333,8 +429,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let desc =
                     super::imports::type_descriptor(desc_ty, struct_fields, field_types, enum_defs);
                 let data_id = *string_ids.get(&desc).unwrap();
-                let local_data = module.declare_data_in_func(data_id, builder.func);
-                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let desc_ptr = super::setup::strings::literal_body(builder, module, data_id);
                 let free_id = func_ids["__olive_free_typed"];
                 let local_func = module.declare_func_in_func(free_id, builder.func);
                 builder.ins().call(local_func, &[reuse_val, desc_ptr]);
@@ -539,12 +634,24 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
+                let index_word =
+                    if integer_cl_type(&super::imports::operand_static_type(idx, func_mir))
+                        .is_some()
+                    {
+                        widen_integer_value(
+                            builder,
+                            i,
+                            super::imports::is_unsigned_op(func_mir, idx),
+                        )
+                    } else {
+                        i
+                    };
                 // Dict keys and `Any` index words are always 64-bit runtime
                 // words; a float key arrives as F64/F32 and must be bitcast
                 // first or the register allocator aborts. List/tuple/bytes
                 // indices stay raw: the checker rejects non-int index types
                 // there, so float values cannot reach those arms.
-                let ikey = float_word_for_i64_slot(builder, i);
+                let ikey = float_word_for_i64_slot(builder, index_word);
                 let loc = loc_value(builder, module, loc_id);
 
                 match ty {
@@ -554,7 +661,7 @@ impl<M: Module> CraneliftCodegen<M> {
                                 .get("__olive_py_from_u64")
                                 .expect("missing __olive_py_from_u64");
                             let local_key = module.declare_func_in_func(*key_id, builder.func);
-                            let inst = builder.ins().call(local_key, &[i]);
+                            let inst = builder.ins().call(local_key, &[index_word]);
                             (builder.inst_results(inst)[0], true)
                         } else {
                             (i, false)
@@ -580,7 +687,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_enum_get")
                             .expect("missing __olive_enum_get");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i]);
+                        let inst = builder.ins().call(local_func, &[o, index_word]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Dict(k, val_ty) if super::imports::needs_key_descriptor(k) => {
@@ -593,8 +700,8 @@ impl<M: Module> CraneliftCodegen<M> {
                         let data_id = *string_ids
                             .get(&desc)
                             .expect("dict key descriptor not interned during collection");
-                        let local_data = module.declare_data_in_func(data_id, builder.func);
-                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        let desc_ptr =
+                            super::setup::strings::literal_body(builder, module, data_id);
                         let get_id = func_ids
                             .get("__olive_obj_get_checked_typed")
                             .expect("missing __olive_obj_get_checked_typed");
@@ -622,8 +729,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             let data_id = *string_ids.get(&desc).expect(
                                 "any-keyed dict index descriptor not interned during collection",
                             );
-                            let local_data = module.declare_data_in_func(data_id, builder.func);
-                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let desc_ptr =
+                                super::setup::strings::literal_body(builder, module, data_id);
                             let get_id = func_ids
                                 .get("__olive_obj_get_checked_typed")
                                 .expect("missing __olive_obj_get_checked_typed");
@@ -667,8 +774,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             let data_id = *string_ids
                                 .get(&desc)
                                 .expect("any-index descriptor not interned during collection");
-                            let local_data = module.declare_data_in_func(data_id, builder.func);
-                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let desc_ptr =
+                                super::setup::strings::literal_body(builder, module, data_id);
                             let get_id = func_ids
                                 .get("__olive_get_index_any_typed")
                                 .expect("missing __olive_get_index_any_typed");
@@ -690,7 +797,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_str_get_checked")
                             .expect("missing __olive_str_get_checked");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i, loc]);
+                        let inst = builder.ins().call(local_func, &[o, index_word, loc]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::List(elem_ty) => {
@@ -701,11 +808,21 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
+                        let index_unsigned = super::imports::is_unsigned_op(func_mir, idx);
                         let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                            emit_bounds_check(
+                                builder,
+                                module,
+                                func_ids,
+                                i,
+                                len,
+                                loc,
+                                index_unsigned,
+                            )
                         } else {
                             i
                         };
+                        let idx = widen_integer_value(builder, idx, index_unsigned);
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -725,11 +842,21 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
+                        let index_unsigned = super::imports::is_unsigned_op(func_mir, idx);
                         let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                            emit_bounds_check(
+                                builder,
+                                module,
+                                func_ids,
+                                i,
+                                len,
+                                loc,
+                                index_unsigned,
+                            )
                         } else {
                             i
                         };
+                        let idx = widen_integer_value(builder, idx, index_unsigned);
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -748,11 +875,21 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             16,
                         );
+                        let index_unsigned = super::imports::is_unsigned_op(func_mir, idx);
                         let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                            emit_bounds_check(
+                                builder,
+                                module,
+                                func_ids,
+                                i,
+                                len,
+                                loc,
+                                index_unsigned,
+                            )
                         } else {
                             i
                         };
+                        let idx = widen_integer_value(builder, idx, index_unsigned);
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -980,10 +1117,36 @@ impl<M: Module> CraneliftCodegen<M> {
                             f64_val
                         }
                     } else {
-                        builder.ins().fcvt_from_sint(target_cl_ty, val)
+                        let source_static = super::imports::operand_static_type(op, func_mir);
+                        let source_ty = super::imports::concrete_ty(&source_static);
+                        let unsigned = matches!(
+                            source_ty,
+                            OliveType::U8
+                                | OliveType::U16
+                                | OliveType::U32
+                                | OliveType::U64
+                                | OliveType::Usize
+                        );
+                        if unsigned {
+                            builder.ins().fcvt_from_uint(target_cl_ty, val)
+                        } else {
+                            builder.ins().fcvt_from_sint(target_cl_ty, val)
+                        }
                     }
                 } else if current_ty.is_float() && target_cl_ty.is_int() {
-                    builder.ins().fcvt_to_sint(target_cl_ty, val)
+                    let unsigned = matches!(
+                        ty,
+                        OliveType::U8
+                            | OliveType::U16
+                            | OliveType::U32
+                            | OliveType::U64
+                            | OliveType::Usize
+                    );
+                    if unsigned {
+                        builder.ins().fcvt_to_uint(target_cl_ty, val)
+                    } else {
+                        builder.ins().fcvt_to_sint(target_cl_ty, val)
+                    }
                 } else if current_ty.is_int() && target_cl_ty.is_int() {
                     if current_ty.bits() < target_cl_ty.bits() {
                         let src_signed = match op {

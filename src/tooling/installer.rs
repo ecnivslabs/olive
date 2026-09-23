@@ -2,8 +2,8 @@ use crate::tooling::manifest::Native;
 use crate::tooling::registry::{NativeSpec, PodVersion};
 use crate::tooling::target;
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
-use std::io::Read;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -330,13 +330,20 @@ fn write_file_atomic(dir: &Path, filename: &str, data: &[u8]) -> Result<(), Inst
     let mut rng = rand::rng();
     use rand::Rng;
     let tmp = dir.join(format!(".tmp-{:x}", rng.next_u64()));
-    fs::write(&tmp, data)?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    if let Err(error) = file.write_all(data).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(&tmp);
+        return Err(InstallError::Io(error));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))?;
     }
-    fs::rename(&tmp, dir.join(filename))?;
+    if let Err(error) = fs::rename(&tmp, dir.join(filename)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(InstallError::Io(error));
+    }
     Ok(())
 }
 
@@ -355,6 +362,7 @@ async fn fetch_native_into(
     spec: &NativeSpec,
     native_dir: &Path,
     locked: Option<&BTreeMap<String, String>>,
+    locked_implib: Option<&BTreeMap<String, String>>,
     offline: bool,
 ) -> Result<(), InstallError> {
     let key = target::host().ok_or_else(|| InstallError::UnsupportedHost {
@@ -381,6 +389,19 @@ async fn fetch_native_into(
             target: key.to_string(),
             locked: expected.clone(),
             found: artifact.cksum.clone(),
+        });
+    }
+
+    if let Some(implib) = &artifact.implib
+        && let Some(expected) = locked_implib.and_then(|values| values.get(key))
+        && *expected != implib.cksum
+    {
+        return Err(InstallError::LockMismatch {
+            pod: pod_name.to_string(),
+            vers: pod_vers.to_string(),
+            target: format!("{key} import library"),
+            locked: expected.clone(),
+            found: implib.cksum.clone(),
         });
     }
 
@@ -473,6 +494,7 @@ async fn ensure_native_artifact(
     pod: &PodVersion,
     final_dir: &Path,
     locked: Option<&BTreeMap<String, String>>,
+    locked_implib: Option<&BTreeMap<String, String>>,
     offline: bool,
 ) -> Result<(), InstallError> {
     if let Some(spec) = &pod.native
@@ -496,11 +518,26 @@ async fn ensure_native_artifact(
     {
         let native_dir = final_dir.join("native");
         let up_to_date = fs::read(native_dir.join(&local_name))
-            .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == artifact.cksum);
+            .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == artifact.cksum)
+            && artifact.implib.as_ref().is_none_or(|implib| {
+                target::local_implib_name(&spec.lib).is_none_or(|local_implib| {
+                    fs::read(native_dir.join(&local_implib))
+                        .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == implib.cksum)
+                })
+            });
         if up_to_date {
             return Ok(());
         }
-        return fetch_native_into(&pod.name, &pod.vers, spec, &native_dir, locked, offline).await;
+        return fetch_native_into(
+            &pod.name,
+            &pod.vers,
+            spec,
+            &native_dir,
+            locked,
+            locked_implib,
+            offline,
+        )
+        .await;
     }
     if pod.native.is_some() && target::host().is_none() {
         return Err(InstallError::UnsupportedHost {
@@ -526,16 +563,20 @@ pub async fn install_pod_atomic(
     pod: &PodVersion,
     final_dir: PathBuf,
     locked: Option<&BTreeMap<String, String>>,
+    locked_implib: Option<&BTreeMap<String, String>>,
     offline: bool,
 ) -> Result<(), InstallError> {
     if final_dir.exists() {
-        if !installed_archive_matches(&final_dir, pod) {
+        if installed_archive_matches(&final_dir, pod) {
+            return ensure_native_artifact(pod, &final_dir, locked, locked_implib, offline).await;
+        }
+        if offline {
             return Err(InstallError::Checksum(format!(
                 "installed pod '{}@{}' has no matching verified archive marker",
                 pod.name, pod.vers
             )));
         }
-        return ensure_native_artifact(pod, &final_dir, locked, offline).await;
+        fs::remove_dir_all(&final_dir).map_err(InstallError::Io)?;
     }
     if offline {
         return Err(InstallError::Offline {
@@ -550,8 +591,25 @@ pub async fn install_pod_atomic(
     let pods_base = final_dir.parent().unwrap().parent().unwrap();
     let mut rng = rand::rng();
     use rand::Rng;
-    let tmp_dir = pods_base.join(format!(".tmp-{:x}", rng.next_u64()));
-    fs::create_dir_all(&tmp_dir)?;
+    fs::create_dir_all(pods_base).map_err(InstallError::Io)?;
+    let mut tmp_dir = None;
+    for _ in 0..16 {
+        let candidate = pods_base.join(format!(".tmp-{:x}", rng.next_u64()));
+        match fs::create_dir(&candidate) {
+            Ok(()) => {
+                tmp_dir = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(InstallError::Io(error)),
+        }
+    }
+    let Some(tmp_dir) = tmp_dir else {
+        return Err(InstallError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique pod staging directory",
+        )));
+    };
 
     let client = reqwest::Client::new();
     let compressed_data = match download_and_verify(&client, &pod.dl, &pod.cksum).await {
@@ -599,10 +657,17 @@ pub async fn install_pod_atomic(
             manifest_pod.name, pod.name
         )));
     }
+    if manifest_pod.version != pod.vers {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(InstallError::Extraction(format!(
+            "archive manifest declares version '{}', expected '{}'",
+            manifest_pod.version, pod.vers
+        )));
+    }
     let extracted_root =
         fs::canonicalize(&tmp_dir).map_err(|error| InstallError::Extraction(error.to_string()))?;
     if let Err(error) =
-        crate::tooling::manifest::validate_pod_layout(&parsed_config, &extracted_root)
+        crate::tooling::manifest::validate_pod_files(&parsed_config, &extracted_root)
     {
         let _ = fs::remove_dir_all(&tmp_dir);
         return Err(InstallError::Extraction(error));
@@ -616,8 +681,16 @@ pub async fn install_pod_atomic(
     if has_host_artifact {
         let spec = pod.native.as_ref().expect("checked above");
         let native_dir = tmp_dir.join("native");
-        if let Err(e) =
-            fetch_native_into(&pod.name, &pod.vers, spec, &native_dir, locked, offline).await
+        if let Err(e) = fetch_native_into(
+            &pod.name,
+            &pod.vers,
+            spec,
+            &native_dir,
+            locked,
+            locked_implib,
+            offline,
+        )
+        .await
         {
             let _ = fs::remove_dir_all(&tmp_dir);
             return Err(e);
@@ -662,6 +735,13 @@ pub async fn install_pod_atomic(
             if !final_dir.exists() {
                 return Err(InstallError::Io(e));
             }
+            if !installed_archive_matches(&final_dir, pod) {
+                return Err(InstallError::Checksum(format!(
+                    "concurrent install of {}@{} produced a different archive",
+                    pod.name, pod.vers
+                )));
+            }
+            ensure_native_artifact(pod, &final_dir, locked, locked_implib, offline).await?;
         }
     }
 
@@ -781,7 +861,13 @@ mod tests {
         };
         let final_dir = base.join("pods").join("mini").join("1.0.0");
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(install_pod_atomic(&pod, final_dir.clone(), None, false));
+        let result = rt.block_on(install_pod_atomic(
+            &pod,
+            final_dir.clone(),
+            None,
+            None,
+            false,
+        ));
         assert!(result.is_ok(), "install failed: {:?}", result.err());
         assert_eq!(
             fs::read(final_dir.join("native").join(&local)).unwrap(),
@@ -815,7 +901,7 @@ mod tests {
         };
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(install_pod_atomic(&pod, dir.clone(), None, true));
+        let result = rt.block_on(install_pod_atomic(&pod, dir.clone(), None, None, true));
         assert!(result.is_ok(), "{result:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -860,7 +946,7 @@ mod tests {
         };
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, false));
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, None, false));
         assert!(result.is_ok());
         assert!(!dir.join("native").exists());
         let _ = fs::remove_dir_all(&dir);
@@ -883,7 +969,7 @@ mod tests {
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, false));
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, None, false));
         match result {
             Err(InstallError::NativeUnavailable { available, .. }) => {
                 assert_eq!(available, vec!["nonexistent-target".to_string()]);
@@ -916,7 +1002,13 @@ mod tests {
         locked.insert(host.to_string(), "locked-hash".to_string());
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(ensure_native_artifact(&pod, &dir, Some(&locked), false));
+        let result = rt.block_on(ensure_native_artifact(
+            &pod,
+            &dir,
+            Some(&locked),
+            None,
+            false,
+        ));
         match result {
             Err(InstallError::LockMismatch {
                 locked: l, found, ..
@@ -950,7 +1042,7 @@ mod tests {
         );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, true));
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, None, true));
         assert!(matches!(result, Err(InstallError::Offline { .. })));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -985,7 +1077,7 @@ mod tests {
         // successful Ok(()) here proves the up-to-date check short-circuits
         // before ever reaching fetch_native_into.
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, true));
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, None, true));
         assert!(result.is_ok(), "{result:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1194,12 +1286,12 @@ mod tests {
             native: None,
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let marked = runtime.block_on(install_pod_atomic(&pod, existing.clone(), None, true));
+        let marked = runtime.block_on(install_pod_atomic(&pod, existing.clone(), None, None, true));
         assert!(matches!(marked, Err(InstallError::Checksum(_))));
 
         let missing = std::env::temp_dir().join("olive_install_missing_offline");
         let _ = fs::remove_dir_all(&missing);
-        let offline = runtime.block_on(install_pod_atomic(&pod, missing, None, true));
+        let offline = runtime.block_on(install_pod_atomic(&pod, missing, None, None, true));
         assert!(matches!(offline, Err(InstallError::Offline { .. })));
         let _ = fs::remove_dir_all(&existing);
     }

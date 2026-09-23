@@ -336,17 +336,26 @@ pub fn abort_python(msg: &str, loc: Option<&str>) -> ! {
 
 /// Raised when an index is outside `0..len`. Reports the length and the
 /// offending index, mirroring how a compile diagnostic would read.
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_bounds_fail(index: i64, len: i64, loc: i64) -> i64 {
-    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
-    let msg = if index < 0 {
+fn bounds_message(index: i64, len: i64, negative_supported: bool) -> String {
+    if negative_supported && index < 0 {
         format!(
             "index out of bounds: the length is {len} but the index is {index}; negative indices are not supported"
         )
     } else {
         format!("index out of bounds: the length is {len} but the index is {index}")
-    };
-    abort_with(&BOUNDS, &msg, loc.as_deref())
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_bounds_fail(index: i64, len: i64, loc: i64) -> i64 {
+    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+    abort_with(&BOUNDS, &bounds_message(index, len, true), loc.as_deref())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_bounds_fail_unsigned(index: i64, len: i64, loc: i64) -> i64 {
+    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+    abort_with(&BOUNDS, &bounds_message(index, len, false), loc.as_deref())
 }
 
 /// Raised when indexing a value that is null (an uninitialised or `None`

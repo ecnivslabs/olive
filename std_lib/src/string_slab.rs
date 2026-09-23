@@ -1,7 +1,7 @@
 //! Size-classed generational slab for heap strings. A slot's body holds the
 //! nul-terminated bytes inline, so a string pointer is the body address with
-//! the string and heap tag bits set. Literals live in read-only data, never
-//! enter a slab, and carry only the string bit, so freeing one is a no-op.
+//! the string and heap tag bits set. Literals live in read-only data with a
+//! length header and a distinct literal tag, so freeing one is a no-op.
 
 use crate::slab::GenSlab;
 use std::cell::UnsafeCell;
@@ -17,16 +17,27 @@ pub const STR_TAG: i64 = 1;
 /// strides by 4, so no untagged string address can set it by accident.
 pub const STR_HEAP: i64 = 2;
 
+/// Marks a read-only literal carrying its byte length in the word before its
+/// body. Foreign C pointers are aligned to at least eight bytes, so bit two is
+/// clear for those pointers.
+pub const STR_LITERAL: i64 = 4;
+
 /// Strips the tag bits, yielding the address of the string bytes.
 #[inline]
 pub fn str_body(ptr: i64) -> i64 {
-    ptr & !(STR_TAG | STR_HEAP)
+    ptr & !(STR_TAG | STR_HEAP | STR_LITERAL)
 }
 
 /// Whether `ptr` is slab-allocated (has a header, frees through a slab).
 #[inline]
 pub fn str_is_heap(ptr: i64) -> bool {
     ptr & STR_HEAP != 0
+}
+
+/// Whether `ptr` addresses a length-bearing read-only literal.
+#[inline]
+pub fn str_is_literal(ptr: i64) -> bool {
+    ptr & STR_LITERAL != 0
 }
 
 /// Byte capacity class for `need` content-plus-nul bytes, one machine word min.
@@ -155,30 +166,61 @@ pub fn str_free(ptr: i64) {
     }
 }
 
-fn str_free_in(ptr: i64, is_global: bool) {
+fn str_free_in(ptr: i64, _is_global: bool) {
     let body = str_body(ptr);
     let header_val = unsafe { *(body as *const usize).sub(2) };
     let cap_idx = header_val >> 48;
     if cap_idx >= 32 {
         return;
     }
-    let body = body as *mut u8;
-    if is_global {
-        crate::slab::with_escape_arena(|| unsafe {
-            let active = crate::slab::ACTIVE_SLABS.get();
-            if let Some(ref mut slab) = (*active).str_slabs[cap_idx] {
-                slab.free(body);
+    let body_addr = body as usize;
+
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null()
+            && let Some(slab) = (*active).str_slabs.get(cap_idx).and_then(Option::as_ref)
+            && slab.owns_addr(body_addr)
+        {
+            if let Some(slab) = (*active)
+                .str_slabs
+                .get_mut(cap_idx)
+                .and_then(Option::as_mut)
+            {
+                slab.free(body as *mut u8);
             }
-        });
-    } else {
-        // Deliberately ignores ACTIVE_SLABS: the body lives in this thread's
-        // own pool even when the current context is the shared arena.
-        STR_SLABS.with(|s| unsafe {
-            if let Some(ref mut slab) = (&mut *s.get()).classes[cap_idx] {
-                slab.free(body);
+            return;
+        }
+
+        let source = crate::slab::SOURCE_SLABS.get();
+        if !source.is_null()
+            && let Some(slab) = (*source).str_slabs.get(cap_idx).and_then(Option::as_ref)
+            && slab.owns_addr(body_addr)
+        {
+            if let Some(slab) = (*source)
+                .str_slabs
+                .get_mut(cap_idx)
+                .and_then(Option::as_mut)
+            {
+                slab.free(body as *mut u8);
             }
-        });
+            return;
+        }
     }
+
+    if !crate::slab::active_slab_is_global()
+        && crate::slab::global_str_owns_addr(body_addr, cap_idx)
+    {
+        crate::slab::global_str_free(body_addr, cap_idx);
+        return;
+    }
+
+    STR_SLABS.with(|s| unsafe {
+        if let Some(slab) = (&mut *s.get()).classes[cap_idx].as_mut()
+            && slab.owns_addr(body_addr)
+        {
+            slab.free(body as *mut u8);
+        }
+    });
 }
 
 /// Optimizes concatenation in-place when the buffer fits. Capacity and length

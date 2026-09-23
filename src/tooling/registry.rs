@@ -4,6 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
+const DEFAULT_REGISTRY: &str = "https://raw.githubusercontent.com/ecnivslabs/pit-registry/master";
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Deserialize)]
@@ -29,7 +30,7 @@ fn get_registry_base() -> String {
     {
         url
     } else {
-        "https://raw.githubusercontent.com/ecnivslabs/pit-registry/master".to_string()
+        DEFAULT_REGISTRY.to_string()
     };
     configured.trim_end_matches('/').to_string()
 }
@@ -130,7 +131,7 @@ pub(crate) fn validate_pod_name(name: &str) -> Result<(), String> {
     validate_component(name, "pod name", false)
 }
 
-fn validate_version(version: &str) -> Result<(), String> {
+pub(crate) fn validate_version(version: &str) -> Result<(), String> {
     validate_component(version, "pod version", true)
 }
 
@@ -178,13 +179,35 @@ fn cache_path(name: &str) -> PathBuf {
         .join(format!("{digest}.json"))
 }
 
+fn legacy_cache_path(name: &str) -> PathBuf {
+    dirs::home_dir()
+        .expect("no home dir")
+        .join(".pit")
+        .join("cache")
+        .join("registry")
+        .join(name)
+}
+
 fn read_cached(name: &str) -> Result<String, String> {
     let path = cache_path(name);
-    let content = fs::read(&path)
-        .map_err(|error| format!("cache read failed for '{}': {error}", path.display()))?;
+    let expected = get_registry_base();
+    let content = match fs::read(&path) {
+        Ok(content) => content,
+        Err(error) => {
+            let legacy = legacy_cache_path(name);
+            let legacy_content = fs::read(&legacy)
+                .map_err(|_| format!("cache read failed for '{}': {error}", path.display()))?;
+            if expected != DEFAULT_REGISTRY {
+                return Err(format!(
+                    "legacy registry cache for '{name}' has no registry identity"
+                ));
+            }
+            return String::from_utf8(legacy_content)
+                .map_err(|error| format!("legacy registry cache is not UTF-8: {error}"));
+        }
+    };
     let cache: RegistryCache = serde_json::from_slice(&content)
         .map_err(|error| format!("invalid registry cache {}: {error}", path.display()))?;
-    let expected = get_registry_base();
     if cache.registry != expected {
         return Err(format!(
             "registry cache for '{name}' belongs to {}, not {expected}",
@@ -282,7 +305,7 @@ pub async fn fetch_versions(name: &str, offline: bool) -> Result<Vec<PodVersion>
     let body = String::from_utf8(bytes)
         .map_err(|_| format!("registry metadata for '{name}' is not UTF-8"))?;
     let versions = parse_versions_for(&body, name)?;
-    write_cached(name, &body)?;
+    let _ = write_cached(name, &body);
     Ok(versions)
 }
 

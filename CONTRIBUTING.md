@@ -45,7 +45,7 @@ The compiler (`pit`) lives under `src/`:
 - `lexer/`, `parser/`: tokenizing and building the AST.
 - `semantic/`: name resolution, type checking, desugaring.
 - `borrow_check/`: compile-time reference aliasing rules (E05xx).
-- `mir/`: the mid-level IR. `builder/` constructs it, `optimizations/` is the pass pipeline (ownership inference, copy elision, loop unrolling, bounds-check elimination, vectorization, and more), `optimizer.rs` sequences them.
+- `mir/`: the mid-level IR. `builder/` constructs it, `optimizations/` contains enabled and experimental passes (ownership inference, copy elision, loop unrolling, bounds-check elimination, and more), `optimizer.rs` sequences enabled passes.
 - `codegen/cranelift/`: MIR to native code.
 - `compile/`: orchestration. Caching, the linker, lints, the fixer, diagnostic loading.
 - `diagnostics/`: the error and warning catalog, backs `pit explain`.

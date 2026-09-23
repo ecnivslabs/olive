@@ -70,12 +70,21 @@ impl<'a> MirBuilder<'a> {
 
             self.start_function(mangled.clone(), params.len(), ret_ty);
 
+            let semantic_param_types = self.global_types.get(&mangled).and_then(|ty| match ty {
+                Type::Fn(params, _, _) => Some(params.clone()),
+                _ => None,
+            });
             let mut param_locals = Vec::new();
-            for param in params {
-                let ty = param
-                    .type_ann
+            for (param_index, param) in params.iter().enumerate() {
+                let ty = semantic_param_types
                     .as_ref()
-                    .map(|ann| self.resolve_type_expr(ann))
+                    .and_then(|types| types.get(param_index).cloned())
+                    .or_else(|| {
+                        param
+                            .type_ann
+                            .as_ref()
+                            .map(|ann| self.resolve_type_expr(ann))
+                    })
                     .unwrap_or(Type::Any);
                 let ty = if param.name == "self" && name.contains("::") {
                     let last_idx = name.rfind("::").unwrap();

@@ -6,7 +6,6 @@ use crate::parser::{ParamKind, Stmt, StmtKind};
 
 fn ffi_type(t: Type) -> Type {
     match t {
-        Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 => Type::Int,
         Type::Ref(inner) => Type::Ref(Box::new(ffi_type(*inner))),
         Type::MutRef(inner) => Type::MutRef(Box::new(ffi_type(*inner))),
         other => other,
@@ -665,6 +664,14 @@ impl TypeChecker {
                     .any(|p| matches!(p.kind, ParamKind::VarArg | ParamKind::KwArg))
                 {
                     self.vararg_fns.insert(final_name.clone());
+                    let fixed = params
+                        .iter()
+                        .filter(|p| p.kind == ParamKind::Regular && p.name != "self")
+                        .count();
+                    let has_vararg = params.iter().any(|p| p.kind == ParamKind::VarArg);
+                    let has_kwargs = params.iter().any(|p| p.kind == ParamKind::KwArg);
+                    self.vararg_layouts
+                        .insert(final_name.clone(), (fixed, has_vararg, has_kwargs));
                 }
 
                 // Count leading required params, skipping `self` to match the
@@ -1233,6 +1240,38 @@ impl TypeChecker {
                     self.c_struct_is_union.insert(type_name.clone(), s.is_union);
                     let mut field_names = Vec::with_capacity(s.fields.len());
                     for field in &s.fields {
+                        if field.bits.is_some_and(|bits| bits == 0 || bits > 64) {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "field `{}` of C struct `{}` has an invalid bit width",
+                                    field.name, s.name
+                                ),
+                                stmt.span,
+                                "C bitfield widths must be between 1 and 64 bits",
+                            );
+                        }
+                        if field.bits.is_some() {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "field `{}` of C struct `{}` is a bitfield",
+                                    field.name, s.name
+                                ),
+                                stmt.span,
+                                "C bitfields have no verified Olive storage lowering",
+                            );
+                        }
+                        if let Some(reason) =
+                            super::super::abi::ffi_type_expr_unsafe_reason(&field.ty)
+                        {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "field `{}` of C struct `{}` has an unsupported type",
+                                    field.name, s.name
+                                ),
+                                stmt.span,
+                                reason,
+                            );
+                        }
                         let resolved = self.resolve_type_expr(&field.ty);
                         let nested_c_struct = match &field.ty.kind {
                             crate::parser::ast::TypeExprKind::Name(name) => {
@@ -1250,6 +1289,16 @@ impl TypeChecker {
                                 "nested C struct fields are not supported by the FFI layout",
                             );
                         }
+                        if matches!(resolved, Type::Str) {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "field `{}` of C struct `{}` is a string",
+                                    field.name, s.name
+                                ),
+                                stmt.span,
+                                "aggregate C string fields require an explicit pointer conversion",
+                            );
+                        }
                         if let Some(reason) = super::super::abi::ffi_value_unsafe_reason(&resolved)
                         {
                             self.push_ffi_unsafe(
@@ -1265,6 +1314,25 @@ impl TypeChecker {
                         self.field_types
                             .insert((type_name.clone(), field.name.clone()), field_ty);
                         field_names.push(field.name.clone());
+                    }
+                    if s.is_union {
+                        self.push_ffi_unsafe(
+                            format!("C union `{}` has no verified Olive storage layout", s.name),
+                            stmt.span,
+                            "C unions are rejected until union field lowering is sound",
+                        );
+                    }
+                    let (_, aggregate_size) =
+                        super::super::abi::c_abi_layout(&s.fields, s.is_union);
+                    if aggregate_size > 16 {
+                        self.push_ffi_unsafe(
+                            format!(
+                                "C aggregate `{}` is {aggregate_size} bytes, beyond the verified 16-byte ABI",
+                                s.name
+                            ),
+                            stmt.span,
+                            "large C aggregates require a verified platform ABI implementation",
+                        );
                     }
                     self.c_struct_fields.insert(type_name, field_names);
                 }

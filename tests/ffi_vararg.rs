@@ -103,6 +103,41 @@ fn main():
 
 #[cfg(target_os = "linux")]
 #[test]
+fn fixed_ffi_string_arguments_strip_all_olive_tags() {
+    assert_both(
+        r#"import "/usr/lib/libc.so.6" as c:
+    fn strlen(s: str) -> int
+
+fn forward(s: Any) -> int:
+    unsafe:
+        return c.strlen(s)
+
+fn main():
+    let value = "".join(["ab", "cd"])
+    print(forward(value))
+"#,
+        "4\n",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn variadic_ffi_string_arguments_strip_all_olive_tags() {
+    assert_both(
+        r#"import "/usr/lib/libc.so.6" as c:
+    fn printf(fmt: str, ...) -> int
+
+fn main():
+    let value = "".join(["ab", "cd"])
+    unsafe:
+        c.printf("%s\n", value)
+"#,
+        "abcd\n",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn c_void_return_is_accepted() {
     assert_both(
         r#"import "/usr/lib/libc.so.6" as c:

@@ -12,6 +12,8 @@ struct Output:
     code: int
     stdout: str
     stderr: str
+    stdout_truncated: bool
+    stderr_truncated: bool
 
 struct Child:
     handle: int
@@ -65,6 +67,12 @@ struct Child:
 
     fn signal_code(self) -> int:
         return __olive_process_signal_code(self.handle)
+
+    fn stdout_truncated(self) -> bool:
+        return __olive_process_stdout_truncated(self.handle) == 1
+
+    fn stderr_truncated(self) -> bool:
+        return __olive_process_stderr_truncated(self.handle) == 1
 
 struct Command:
     program: str
@@ -145,8 +153,10 @@ struct Command:
         let code = proc.wait()
         let out = proc.read_stdout()
         let err = proc.read_stderr()
+        let out_truncated = proc.stdout_truncated()
+        let err_truncated = proc.stderr_truncated()
 
-        return Output(code, out, err)
+        return Output(code, out, err, out_truncated, err_truncated)
 
 fn run(argv: [str]) -> Output | int:
     if len(argv) == 0:

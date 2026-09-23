@@ -134,7 +134,7 @@ fn read_manifest() -> Result<Config, String> {
     let content = fs::read_to_string("pit.toml").map_err(|_| "pit.toml not found")?;
     let config: Config = toml::from_str(&content).map_err(|e| format!("invalid pit.toml: {e}"))?;
     let root = std::env::current_dir().map_err(|e| format!("cannot resolve project root: {e}"))?;
-    crate::tooling::manifest::validate_pod_layout(&config, &root)?;
+    crate::tooling::manifest::validate_pod_files(&config, &root)?;
     Ok(config)
 }
 

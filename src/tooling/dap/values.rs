@@ -270,28 +270,38 @@ fn format_typed(session: &EngineShared, val: i64, desc: &CStr) -> String {
         return String::new();
     };
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    read_rendered(f(val, desc.as_ptr() as i64))
+    read_rendered(session, f(val, desc.as_ptr() as i64))
 }
 
-/// Low bits an Olive string pointer carries: the string tag and the
-/// heap-allocated tag. Mirrors `STR_TAG`/`STR_HEAP` in the runtime's
-/// `string_slab`, which the debugger reaches by symbol rather than by
-/// linking, so the value cannot be shared directly.
-const STR_TAG_BITS: i64 = 3;
-
-/// Every `olive_format_typed` result is a freshly interned, tagged olive
-/// string with no embedded NUL (`olive_str_internal` strips them) and a
-/// guaranteed trailing one (`string_slab::str_alloc`), so a plain `CStr`
-/// read is safe without duplicating the slab/literal layout distinction
-/// `olive_str_to_bytes` makes.
-fn read_rendered(ptr: i64) -> String {
+fn read_rendered(session: &EngineShared, ptr: i64) -> String {
     if ptr == 0 {
         return String::new();
     }
-    let masked = (ptr & !STR_TAG_BITS) as *const std::os::raw::c_char;
-    unsafe { CStr::from_ptr(masked) }
-        .to_string_lossy()
-        .into_owned()
+    let free = session.runtime_symbol("olive_free_str").map(|symbol| {
+        let free_fn: extern "C" fn(i64) = unsafe { std::mem::transmute(symbol) };
+        free_fn
+    });
+    let Some(symbol) = session.runtime_symbol("olive_debug_str_bytes") else {
+        if let Some(free_fn) = free {
+            free_fn(ptr);
+        }
+        return String::new();
+    };
+    let bytes_fn: extern "C" fn(i64, *mut i64) -> i64 = unsafe { std::mem::transmute(symbol) };
+    let mut len = 0i64;
+    let data = bytes_fn(ptr, &mut len);
+    if data == 0 || len < 0 {
+        if let Some(free_fn) = free {
+            free_fn(ptr);
+        }
+        return String::new();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data as *const u8, len as usize) };
+    let rendered = String::from_utf8_lossy(bytes).into_owned();
+    if let Some(free_fn) = free {
+        free_fn(ptr);
+    }
+    rendered
 }
 
 fn call1(session: &EngineShared, name: &str, a: i64) -> i64 {

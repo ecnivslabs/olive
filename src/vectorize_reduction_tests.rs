@@ -1,9 +1,10 @@
-//! Correctness tests for vectorized integer reductions: the folded result
-//! must match the scalar sum for every trip-count shape, including counts
-//! below the vector width and remainders the scalar epilogue handles.
+//! Characterization tests for experimental integer vectorization. They invoke
+//! `LoopVectorizer` directly while the pass remains outside release builds.
 
 #[cfg(test)]
-use crate::test_utils::{call_i64_1, compile};
+use crate::mir::optimizations::vectorize::LoopVectorizer;
+#[cfg(test)]
+use crate::test_utils::{call_i64_1, compile_with_pass};
 
 #[cfg(test)]
 const SUM_SRC: &str = concat!(
@@ -28,7 +29,7 @@ fn scalar_sum(n: i64) -> i64 {
 
 #[test]
 fn reduction_sum_matches_scalar_across_trip_counts() {
-    let mut cg = compile(SUM_SRC);
+    let mut cg = compile_with_pass(SUM_SRC, Box::new(LoopVectorizer));
     for n in [0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 1000, 1001] {
         assert_eq!(call_i64_1(&mut cg, "f", n), scalar_sum(n), "n={n}");
     }
@@ -50,7 +51,7 @@ fn reduction_product_matches_scalar() {
         "        i = i + 1\n",
         "    return p\n",
     );
-    let mut cg = compile(src);
+    let mut cg = compile_with_pass(src, Box::new(LoopVectorizer));
     for n in [0, 1, 2, 3, 5, 10, 20] {
         let expected: i64 = (1..=n).product();
         assert_eq!(call_i64_1(&mut cg, "f", n), expected, "n={n}");
@@ -73,7 +74,7 @@ fn reduction_accumulator_seed_survives() {
         "        i = i + 1\n",
         "    return sum\n",
     );
-    let mut cg = compile(src);
+    let mut cg = compile_with_pass(src, Box::new(LoopVectorizer));
     for n in [0, 1, 5, 64, 101] {
         assert_eq!(call_i64_1(&mut cg, "f", n), 100 + 2 * n, "n={n}");
     }
@@ -97,7 +98,7 @@ fn two_reductions_in_one_loop() {
         "        i = i + 1\n",
         "    return a * 1000000 + b\n",
     );
-    let mut cg = compile(src);
+    let mut cg = compile_with_pass(src, Box::new(LoopVectorizer));
     for n in [0, 3, 10, 33] {
         let s: i64 = (0..n).sum();
         assert_eq!(call_i64_1(&mut cg, "f", n), s * 1_000_000 + s, "n={n}");

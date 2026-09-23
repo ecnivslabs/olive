@@ -11,8 +11,10 @@
 
 use crate::python::python_bindings::*;
 use crate::python::*;
+use std::collections::HashMap;
 use std::os::raw::{c_char, c_void};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 pub const DL_CPU: i32 = 1;
 
@@ -23,6 +25,34 @@ pub const DL_BOOL: u8 = 6;
 
 const DLTENSOR_NAME: &[u8] = b"dltensor\0";
 const USED_DLTENSOR_NAME: &[u8] = b"used_dltensor\0";
+
+static DLPACK_HANDLES: OnceLock<Mutex<HashMap<i64, usize>>> = OnceLock::new();
+static NEXT_DLPACK_HANDLE: AtomicI64 = AtomicI64::new(1);
+
+fn dlpack_handles() -> &'static Mutex<HashMap<i64, usize>> {
+    DLPACK_HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_dlpack_handle(ptr: *mut DLManagedTensor) -> i64 {
+    let handle = NEXT_DLPACK_HANDLE.fetch_add(1, Ordering::Relaxed);
+    dlpack_handles()
+        .lock()
+        .unwrap()
+        .insert(handle, ptr as usize);
+    handle
+}
+
+fn lookup_dlpack_handle(handle: i64) -> Option<*mut DLManagedTensor> {
+    dlpack_handles()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .map(|ptr| *ptr as *mut DLManagedTensor)
+}
+
+fn with_dlpack_handle<R>(handle: i64, default: R, f: impl FnOnce(*mut DLManagedTensor) -> R) -> R {
+    lookup_dlpack_handle(handle).map(f).unwrap_or(default)
+}
 
 #[repr(C)]
 struct DLDevice {
@@ -174,7 +204,18 @@ pub struct ImportedDlpack {
 
 impl ImportedDlpack {
     pub fn data_ptr(&self) -> *mut c_void {
-        unsafe { (*self.dlmt).dl_tensor.data }
+        unsafe {
+            let tensor = &(*self.dlmt).dl_tensor;
+            let offset = isize::try_from(tensor.byte_offset).ok();
+            match offset {
+                Some(offset) => tensor.data.cast::<u8>().add(offset as usize).cast(),
+                None => std::ptr::null_mut(),
+            }
+        }
+    }
+
+    pub fn byte_offset(&self) -> u64 {
+        unsafe { (*self.dlmt).dl_tensor.byte_offset }
     }
     pub fn ndim(&self) -> i32 {
         unsafe { (*self.dlmt).dl_tensor.ndim }
@@ -273,77 +314,100 @@ pub extern "C" fn olive_dlpack_import(obj: PyObject) -> i64 {
     if raw.is_null() {
         return 0;
     }
-    crate::python::with_gil(|| unsafe { dlpack_import(raw).map_or(0, |d| d.dlmt as i64) })
+    crate::python::with_gil(|| unsafe {
+        dlpack_import(raw).map_or(0, |d| register_dlpack_handle(d.dlmt))
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_data_ptr(handle: i64) -> i64 {
-    if handle == 0 {
-        return 0;
-    }
-    unsafe { (*(handle as *const DLManagedTensor)).dl_tensor.data as i64 }
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        let tensor = &(*dlmt).dl_tensor;
+        let Some(offset) = isize::try_from(tensor.byte_offset).ok() else {
+            return 0;
+        };
+        tensor.data.cast::<u8>().add(offset as usize) as i64
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dlpack_byte_offset(handle: i64) -> i64 {
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        (*dlmt).dl_tensor.byte_offset as i64
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_ndim(handle: i64) -> i64 {
-    if handle == 0 {
-        return 0;
-    }
-    unsafe { (*(handle as *const DLManagedTensor)).dl_tensor.ndim as i64 }
+    with_dlpack_handle(handle, 0, |dlmt| unsafe { (*dlmt).dl_tensor.ndim as i64 })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_shape_at(handle: i64, dim: i64) -> i64 {
-    if handle == 0 {
-        return 0;
-    }
-    unsafe {
-        let t = &(*(handle as *const DLManagedTensor)).dl_tensor;
-        if dim < 0 || dim >= t.ndim as i64 {
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        let t = &(*dlmt).dl_tensor;
+        if dim < 0 || dim >= t.ndim as i64 || t.shape.is_null() {
             return 0;
         }
         *t.shape.add(dim as usize)
-    }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dlpack_strides_at(handle: i64, dim: i64) -> i64 {
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        let t = &(*dlmt).dl_tensor;
+        if dim < 0 || dim >= t.ndim as i64 || t.strides.is_null() {
+            return 0;
+        }
+        *t.strides.add(dim as usize)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_dtype_code(handle: i64) -> i64 {
-    if handle == 0 {
-        return 0;
-    }
-    unsafe { (*(handle as *const DLManagedTensor)).dl_tensor.dtype.code as i64 }
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        (*dlmt).dl_tensor.dtype.code as i64
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_bits(handle: i64) -> i64 {
-    if handle == 0 {
-        return 0;
-    }
-    unsafe { (*(handle as *const DLManagedTensor)).dl_tensor.dtype.bits as i64 }
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        (*dlmt).dl_tensor.dtype.bits as i64
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dlpack_lanes(handle: i64) -> i64 {
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        (*dlmt).dl_tensor.dtype.lanes as i64
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dlpack_device_id(handle: i64) -> i64 {
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        (*dlmt).dl_tensor.device.device_id as i64
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_device_type(handle: i64) -> i64 {
-    if handle == 0 {
-        return 0;
-    }
-    unsafe {
-        (*(handle as *const DLManagedTensor))
-            .dl_tensor
-            .device
-            .device_type as i64
-    }
+    with_dlpack_handle(handle, 0, |dlmt| unsafe {
+        (*dlmt).dl_tensor.device.device_type as i64
+    })
 }
 
 /// Runs the exporter's deleter, consuming `handle`. Must be called exactly
 /// once, and never touched again afterward.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_release(handle: i64) {
-    if handle == 0 {
+    let Some(dlmt) = dlpack_handles().lock().unwrap().remove(&handle) else {
         return;
-    }
+    };
+    let dlmt = dlmt as *mut DLManagedTensor;
     crate::python::with_gil(|| unsafe {
-        let dlmt = handle as *mut DLManagedTensor;
         if let Some(del) = (*dlmt).deleter {
             del(dlmt);
         }
@@ -408,6 +472,14 @@ mod tests {
         unsafe {
             EXPORT_FREED = true;
         }
+    }
+
+    #[test]
+    fn invalid_dlpack_handles_fail_closed() {
+        assert_eq!(olive_dlpack_data_ptr(1), 0);
+        assert_eq!(olive_dlpack_shape_at(1, 0), 0);
+        assert_eq!(olive_dlpack_strides_at(1, 0), 0);
+        olive_dlpack_release(1);
     }
 
     #[test]

@@ -45,7 +45,8 @@ pub(crate) unsafe fn release_enum_storage(body: *mut u8) {
 pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64, desc: i64) -> i64 {
     // `desc` is the raw `D_ENUM` descriptor pointer (passed untagged like
     // every other typed-free descriptor), stored for descriptor-less frees.
-    let mut payload = vec![0i64; arg_count as usize];
+    let arg_count = arg_count.max(0) as usize;
+    let mut payload = vec![0i64; arg_count];
     let payload_ptr = payload.as_mut_ptr();
     let payload_len = payload.len();
     std::mem::forget(payload);
@@ -81,12 +82,10 @@ pub extern "C" fn olive_enum_type_id(ptr: i64) -> i64 {
     if !crate::is_active_object(ptr) {
         return -1;
     }
-    let kind = unsafe { *(ptr as *const i64) };
-    if kind == KIND_ENUM {
-        unsafe { (*(ptr as *const OliveEnum)).type_id }
-    } else {
-        -1
+    if !crate::is_kind(ptr, KIND_ENUM) {
+        return -1;
     }
+    unsafe { (*(ptr as *const OliveEnum)).type_id }
 }
 
 #[unsafe(no_mangle)]
@@ -94,17 +93,15 @@ pub extern "C" fn olive_enum_tag(ptr: i64) -> i64 {
     if !crate::is_active_object(ptr) {
         return -1;
     }
-    let kind = unsafe { *(ptr as *const i64) };
-    if kind == KIND_ENUM {
-        unsafe { (*(ptr as *const OliveEnum)).tag }
-    } else {
-        -1
+    if !crate::is_kind(ptr, KIND_ENUM) {
+        return -1;
     }
+    unsafe { (*(ptr as *const OliveEnum)).tag }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_enum_get(ptr: i64, index: i64) -> i64 {
-    if ptr == 0 {
+    if ptr == 0 || !crate::is_kind(ptr, KIND_ENUM) {
         return 0;
     }
     let e = unsafe { &*(ptr as *const OliveEnum) };
@@ -117,7 +114,7 @@ pub extern "C" fn olive_enum_get(ptr: i64, index: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_enum_set(ptr: i64, index: i64, val: i64) {
-    if ptr == 0 {
+    if ptr == 0 || !crate::is_kind(ptr, KIND_ENUM) {
         return;
     }
     let e = unsafe { &mut *(ptr as *mut OliveEnum) };
@@ -135,7 +132,7 @@ pub extern "C" fn olive_enum_set(ptr: i64, index: i64, val: i64) {
 /// self-assignment guard.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_enum_set_typed(ptr: i64, index: i64, val: i64, desc: i64) {
-    if ptr == 0 {
+    if ptr == 0 || !crate::is_kind(ptr, KIND_ENUM) {
         return;
     }
     let (tag, pptr, plen) = unsafe {
@@ -186,6 +183,9 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
     let Some(is_global) = crate::slab::slab_membership(ptr) else {
         return;
     };
+    if !crate::is_kind(ptr, KIND_ENUM) {
+        return;
+    }
     // Same arena-aware ownership scan as `olive_free_obj`: an enum received
     // over a channel lives in the global escape arena and a purely local
     // owns_addr check would leak it.
@@ -269,8 +269,8 @@ pub extern "C" fn olive_enum_new_reuse(
     bump: i64,
     desc: i64,
 ) -> i64 {
-    if old_ptr == 0 {
-        return olive_enum_new(type_id, tag, arg_count, desc);
+    if old_ptr == 0 || !crate::is_kind(old_ptr, KIND_ENUM) || arg_count < 0 {
+        return olive_enum_new(type_id, tag, arg_count.max(0), desc);
     }
     if bump != 0 {
         unsafe {
@@ -320,6 +320,10 @@ pub extern "C" fn olive_print_enum(ptr: i64) -> i64 {
         println!("<null enum>");
         return 0;
     }
+    if !crate::is_kind(ptr, KIND_ENUM) {
+        println!("<invalid enum>");
+        return 0;
+    }
     let e = unsafe { &*(ptr as *const OliveEnum) };
     print!("Enum(type_id={}, tag={}", e.type_id, e.tag);
     if e.payload_len > 0 {
@@ -340,6 +344,17 @@ pub extern "C" fn olive_print_enum(ptr: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enum_entrypoints_reject_raw_struct_with_enum_header() {
+        let raw = crate::struct_obj::olive_struct_alloc(3);
+        assert_eq!(olive_enum_type_id(raw), -1);
+        assert_eq!(olive_enum_tag(raw), -1);
+        assert_eq!(olive_enum_get(raw, 0), 0);
+        olive_enum_set(raw, 0, 1);
+        olive_free_enum(raw);
+        crate::struct_obj::olive_free_struct(raw);
+    }
 
     #[test]
     fn new_enum_basic() {

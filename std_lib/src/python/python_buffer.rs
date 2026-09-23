@@ -36,26 +36,37 @@ pub(crate) struct PyBuffer {
     pub(crate) internal: *mut c_void,
 }
 
-/// Reads `view`'s format code, ignoring an exporter's optional leading
-/// byte-order/alignment prefix (`@`, `=`, `<`, `>`, `!`) -- the buffer
-/// protocol doesn't require one, but nothing forbids it either.
-unsafe fn format_code(view: &PyBuffer) -> u8 {
+fn format_code_and_native_order(view: &PyBuffer) -> Option<(u8, bool)> {
     if view.format.is_null() {
-        return b'B';
+        return Some((b'B', true));
     }
     unsafe {
         let mut p = view.format as *const u8;
+        let mut native = true;
+        match *p {
+            b'@' | b'=' => {}
+            b'<' => native = cfg!(target_endian = "little"),
+            b'>' | b'!' => native = cfg!(target_endian = "big"),
+            _ => {}
+        }
         while matches!(*p, b'@' | b'=' | b'<' | b'>' | b'!') {
             p = p.add(1);
         }
-        *p
+        Some((*p, native))
     }
 }
 
 /// One-dimensional, matches the requested element tag, and its declared
 /// length agrees with `len * itemsize`. Anything else isn't eligible.
 unsafe fn eligible_len(view: &PyBuffer) -> Option<usize> {
-    if view.ndim != 1 || view.buf.is_null() || view.itemsize <= 0 {
+    if view.ndim != 1
+        || view.buf.is_null()
+        || view.itemsize <= 0
+        || view.len < 0
+        || !view.suboffsets.is_null()
+        || !view.strides.is_null()
+        || !format_code_and_native_order(view).is_some_and(|(_, native)| native)
+    {
         return None;
     }
     let len = if view.shape.is_null() {
@@ -73,19 +84,25 @@ unsafe fn eligible_len(view: &PyBuffer) -> Option<usize> {
 /// Olive's signed `int` would silently flip large values negative.
 unsafe fn convert_int(view: &PyBuffer, len: usize) -> i64 {
     unsafe {
-        match (view.itemsize, format_code(view)) {
+        let Some((format, _)) = format_code_and_native_order(view) else {
+            return 0;
+        };
+        match (view.itemsize, format) {
             (8, b'q' | b'l' | b'n') => {
                 let list_ptr = crate::olive_list_new(len as i64);
                 let sv = &mut *(list_ptr as *mut crate::StableVec);
-                std::ptr::copy_nonoverlapping(view.buf as *const i64, sv.ptr, len);
+                let src = view.buf as *const u8;
+                for i in 0..len {
+                    *sv.ptr.add(i) = std::ptr::read_unaligned(src.add(i * 8) as *const i64);
+                }
                 list_ptr
             }
             (4, b'i' | b'l') => {
                 let list_ptr = crate::olive_list_new(len as i64);
                 let sv = &mut *(list_ptr as *mut crate::StableVec);
-                let src = view.buf as *const i32;
+                let src = view.buf as *const u8;
                 for i in 0..len {
-                    *sv.ptr.add(i) = *src.add(i) as i64;
+                    *sv.ptr.add(i) = std::ptr::read_unaligned(src.add(i * 4) as *const i32) as i64;
                 }
                 list_ptr
             }
@@ -96,19 +113,28 @@ unsafe fn convert_int(view: &PyBuffer, len: usize) -> i64 {
 
 unsafe fn convert_float(view: &PyBuffer, len: usize) -> i64 {
     unsafe {
-        match (view.itemsize, format_code(view)) {
+        let Some((format, _)) = format_code_and_native_order(view) else {
+            return 0;
+        };
+        match (view.itemsize, format) {
             (8, b'd') => {
                 let list_ptr = crate::olive_list_new(len as i64);
                 let sv = &mut *(list_ptr as *mut crate::StableVec);
-                std::ptr::copy_nonoverlapping(view.buf as *const i64, sv.ptr, len);
+                let src = view.buf as *const u8;
+                for i in 0..len {
+                    *sv.ptr.add(i) =
+                        f64::from_bits(std::ptr::read_unaligned(src.add(i * 8) as *const u64))
+                            .to_bits() as i64;
+                }
                 list_ptr
             }
             (4, b'f') => {
                 let list_ptr = crate::olive_list_new(len as i64);
                 let sv = &mut *(list_ptr as *mut crate::StableVec);
-                let src = view.buf as *const f32;
+                let src = view.buf as *const u8;
                 for i in 0..len {
-                    *sv.ptr.add(i) = ((*src.add(i)) as f64).to_bits() as i64;
+                    *sv.ptr.add(i) = (std::ptr::read_unaligned(src.add(i * 4) as *const f32) as f64)
+                        .to_bits() as i64;
                 }
                 list_ptr
             }

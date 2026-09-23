@@ -98,8 +98,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         let data_id = *string_ids
                             .get(&desc)
                             .expect("dict key descriptor not interned during collection");
-                        let local_data = module.declare_data_in_func(data_id, builder.func);
-                        builder.ins().symbol_value(types::I64, local_data)
+                        super::setup::strings::literal_body(builder, module, data_id)
                     })
                 });
                 let set_id = func_ids
@@ -149,8 +148,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let desc_id = *string_ids
                     .get(desc)
                     .expect("enum descriptor not interned during collection");
-                let local_desc = module.declare_data_in_func(desc_id, builder.func);
-                let desc_val = builder.ins().symbol_value(types::I64, local_desc);
+                let desc_val = super::setup::strings::literal_body(builder, module, desc_id);
                 let enum_ptr = if let Some((_, reuse_val, has_borrow)) = reuse {
                     let new_id = func_ids.get("__olive_enum_new_reuse").unwrap();
                     let new_func = module.declare_func_in_func(*new_id, builder.func);
@@ -226,8 +224,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         let data_id = *string_ids
                             .get(&desc)
                             .expect("set element descriptor not interned during collection");
-                        let local_data = module.declare_data_in_func(data_id, builder.func);
-                        builder.ins().symbol_value(types::I64, local_data)
+                        super::setup::strings::literal_body(builder, module, data_id)
                     })
                 });
                 let add_id = func_ids

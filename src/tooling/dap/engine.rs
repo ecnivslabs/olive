@@ -119,6 +119,10 @@ pub struct EngineShared {
     /// One descriptor per named cell, built once at launch so `values.rs`
     /// never re-encodes a top-level cell's type on every variable request.
     cell_descs: FxHashMap<(u32, usize), CString>,
+    /// Descriptors retained for debugger-built enums. Their payloads can
+    /// outlive the request that constructed them, so enum records cannot
+    /// borrow a request-local CString.
+    debug_descs: Mutex<FxHashMap<String, CString>>,
     pub(crate) var_store: VarStore,
     /// Runtime function addresses resolved once at launch (`launch.rs`,
     /// right after the JIT module finalizes) so the stmt hook can decode
@@ -149,7 +153,7 @@ const fn unpack_frame(frame_id: usize) -> (i64, usize) {
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
-const RUNTIME_SYM_NAMES: [&str; 20] = [
+const RUNTIME_SYM_NAMES: [&str; 23] = [
     "olive_format_typed",
     "olive_debug_seq_len",
     "olive_debug_seq_get",
@@ -163,6 +167,7 @@ const RUNTIME_SYM_NAMES: [&str; 20] = [
     "olive_debug_dict_set",
     "olive_debug_enum_set",
     "olive_debug_str_new",
+    "olive_free_str",
     // Whole-aggregate `setVariable`/`setExpression` construction
     // (`setvar.rs::build_aggregate`): the same allocators codegen itself
     // uses for a list/dict/struct/enum literal, reached by name instead of
@@ -173,6 +178,8 @@ const RUNTIME_SYM_NAMES: [&str; 20] = [
     "olive_obj_set_typed",
     "olive_struct_alloc",
     "olive_enum_new",
+    "olive_set_new",
+    "olive_set_add",
     // Async-stack reconstruction: the executor's own await graph, read to
     // walk from a stopped `async fn` frame up through the suspended frames
     // parked awaiting it (`EngineShared::async_parents`).
@@ -223,13 +230,25 @@ impl EngineShared {
             field_types,
             enum_defs,
             cell_descs,
+            debug_descs: Mutex::new(FxHashMap::default()),
             var_store: VarStore::new(),
             runtime_syms: OnceLock::new(),
             variant_table: OnceLock::new(),
         })
     }
 
-    /// Registers a new traced thread and assigns it a stable DAP id (the
+    pub(crate) fn intern_debug_descriptor(&self, ty: &Type) -> Result<i64, String> {
+        let bytes = type_descriptor(ty, &self.struct_fields, &self.field_types, &self.enum_defs);
+        let mut descriptors = self.debug_descs.lock().unwrap();
+        let descriptor = descriptors
+            .entry(bytes.clone())
+            .or_insert_with(|| {
+                CString::new(bytes).expect("type descriptor bytes are non-zero by construction")
+            })
+            .as_ptr() as i64;
+        Ok(descriptor)
+    }
+
     /// first-ever registration, always the main debuggee thread, gets id 1).
     /// Purely bookkeeping -- no `ThreadStarted` event, since the main
     /// thread's own registration (`launch.rs`, before that thread starts,

@@ -62,10 +62,14 @@ pub enum Rvalue {
     GetTypeId(Operand),
     Ref(Local),
     MutRef(Local),
+    #[allow(dead_code)]
     VectorSplat(Operand, usize),
+    #[allow(dead_code)]
     VectorLoad(Operand, Operand, usize),
+    #[allow(dead_code)]
     VectorFMA(Operand, Operand, Operand),
     /// Horizontal fold of a vector's lanes with an associative int op.
+    #[allow(dead_code)]
     VectorReduce(BinOp, Operand, usize),
     PtrLoad(Operand),
     FatPtrData(Operand),
@@ -94,6 +98,7 @@ pub enum StatementKind {
     StorageLive(Local),
     StorageDead(Local),
     Drop(Local),
+    #[allow(dead_code)]
     VectorStore(Operand, Operand, Operand),
     PtrStore(Operand, Operand),
     /// Panics with a stale-reference fault unless `value` is null or its

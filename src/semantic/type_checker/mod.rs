@@ -123,6 +123,9 @@ pub struct TypeChecker {
     pub(super) current_struct: Option<String>,
     pub(super) async_depth: usize,
     pub(super) vararg_fns: HashSet<String>,
+    /// Normal Olive variadic layout: regular positional count, positional
+    /// variadic flag, keyword-variadic flag. C variadics keep their FFI path.
+    pub(super) vararg_layouts: HashMap<String, (usize, bool, bool)>,
     /// Per fn, count of leading non-default params (call may omit trailing defaults).
     pub(super) fn_required_args: HashMap<String, usize>,
     pub struct_fields: HashMap<String, Vec<String>>,
@@ -532,6 +535,10 @@ impl TypeChecker {
                 Type::Fn(vec![Type::Int], Box::new(Type::Null), Vec::new()),
             ),
             (
+                "__olive_http_str_is_null",
+                Type::Fn(vec![Type::Str], Box::new(Type::Bool), Vec::new()),
+            ),
+            (
                 "__olive_http_get",
                 Type::Fn(vec![Type::Str], Box::new(Type::Str), Vec::new()),
             ),
@@ -599,6 +606,7 @@ impl TypeChecker {
             current_struct: None,
             async_depth: 0,
             vararg_fns,
+            vararg_layouts: HashMap::default(),
             fn_required_args: HashMap::default(),
             struct_fields: HashMap::default(),
             struct_required_fields: HashMap::default(),

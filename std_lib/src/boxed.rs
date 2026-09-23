@@ -242,7 +242,7 @@ fn is_str(v: i64) -> bool {
 /// True when an Any slot holds a Python object handle that must be unwrapped
 /// before reading as a number.
 fn is_pyobject(v: i64) -> bool {
-    is_active_object(v) && unsafe { *(v as *const i64) } == crate::KIND_PYOBJECT
+    crate::is_kind(v, crate::KIND_PYOBJECT)
 }
 
 /// Truthiness of an `Any`: by value for an inline scalar or boxed float,
@@ -272,7 +272,15 @@ pub extern "C" fn olive_any_truthy(v: i64) -> i64 {
 
 /// Frees a heap scalar from `heap_box`; inline immediates own nothing.
 pub fn olive_free_boxed(ptr: i64) {
-    if ptr == 0 || ptr & TAG_MASK != 0 || !crate::slab::ptr_in_slab_span(ptr) {
+    if ptr == 0
+        || ptr & TAG_MASK != 0
+        || !crate::slab::ptr_in_slab_span(ptr)
+        || !is_active_object(ptr)
+    {
+        return;
+    }
+    let kind = unsafe { *(ptr as *const i64) };
+    if !matches!(kind, KIND_FLOAT | KIND_INT | KIND_U64) || !crate::is_kind(ptr, kind) {
         return;
     }
     match crate::slab::slab_membership(ptr) {
@@ -293,8 +301,11 @@ fn as_boxed(v: i64) -> Option<&'static OliveBoxed> {
     if !is_active_object(v) {
         return None;
     }
-    let b = unsafe { &*(v as *const OliveBoxed) };
-    matches!(b.kind, KIND_FLOAT | KIND_INT | KIND_U64).then_some(b)
+    let kind = unsafe { *(v as *const i64) };
+    if !matches!(kind, KIND_FLOAT | KIND_INT | KIND_U64) || !crate::is_kind(v, kind) {
+        return None;
+    }
+    Some(unsafe { &*(v as *const OliveBoxed) })
 }
 
 #[cfg(test)]

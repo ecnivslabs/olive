@@ -56,6 +56,8 @@ pub async fn ensure_deps_installed(
     let mut locked_archives: HashMap<String, String> = HashMap::new();
     let mut locked_native: HashMap<String, std::collections::BTreeMap<String, String>> =
         HashMap::new();
+    let mut locked_native_implib: HashMap<String, std::collections::BTreeMap<String, String>> =
+        HashMap::new();
     if let Some(lk) = &lockfile {
         for pod in &lk.pods {
             let is_unlocked = match &unlocked {
@@ -68,6 +70,9 @@ pub async fn ensure_deps_installed(
                 locked_archives.insert(pod.name.clone(), pod.cksum.clone());
                 if !pod.native.is_empty() {
                     locked_native.insert(pod.name.clone(), pod.native.clone());
+                }
+                if !pod.native_implib.is_empty() {
+                    locked_native_implib.insert(pod.name.clone(), pod.native_implib.clone());
                 }
             }
         }
@@ -89,8 +94,13 @@ pub async fn ensure_deps_installed(
         }
         let final_dir = installed_path(&pod.name, &pod.vers);
         let locked = locked_native.get(&pod.name);
+        let locked_implib = locked_native_implib.get(&pod.name);
         futures.push(installer::install_pod_atomic(
-            pod, final_dir, locked, offline,
+            pod,
+            final_dir,
+            locked,
+            locked_implib,
+            offline,
         ));
     }
 
@@ -111,10 +121,26 @@ pub async fn ensure_deps_installed(
                 .collect(),
             native: pod
                 .native
+                .as_ref()
                 .map(|spec| {
                     spec.artifacts
-                        .into_iter()
-                        .map(|(key, artifact)| (key, artifact.cksum))
+                        .iter()
+                        .map(|(key, artifact)| (key.clone(), artifact.cksum.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            native_implib: pod
+                .native
+                .as_ref()
+                .map(|spec| {
+                    spec.artifacts
+                        .iter()
+                        .filter_map(|(key, artifact)| {
+                            artifact
+                                .implib
+                                .as_ref()
+                                .map(|file| (key.clone(), file.cksum.clone()))
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),

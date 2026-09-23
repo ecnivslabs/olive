@@ -1,21 +1,10 @@
+#![allow(dead_code)]
+
 use crate::mir::loop_utils;
 use crate::mir::optimizations::Transform;
 use crate::mir::*;
 use crate::span::Span;
 use rustc_hash::FxHashSet as HashSet;
-
-/// Callees taking a `PyObject` as their first argument that only ever read
-/// it (`__len__`, `__getitem__` on the builtin protocol path) -- never
-/// resize, replace, or otherwise mutate what the argument points at.
-/// `__olive_py_getitem`'s second argument is a key/index `PyObject`, never
-/// the container itself, so `target` appearing there would be a distinct
-/// (nonsensical) case already excluded by the arg-position check at the
-/// call site.
-const PURE_READ_CALLS: &[&str] = &[
-    "__olive_py_len",
-    "__olive_py_getitem_int",
-    "__olive_py_getitem",
-];
 
 pub struct Licm;
 
@@ -112,10 +101,8 @@ impl Licm {
                         && !invariant_locals.contains(local)
                         // Hoisting a move-type value past its Drop would free it early.
                         && !func.locals[local.0].ty.is_move_type()
-                        && (self.is_invariant(rval, &defined_in_loop, &invariant_locals)
-                            && self.is_safe_to_hoist(rval)
-                            && self.container_not_mutated_behind_calls(rval, func, &lp.body)
-                            || self.is_hoistable_py_len_call(rval, func, &lp.body, &defined_in_loop, &invariant_locals))
+                        && self.is_invariant(rval, &defined_in_loop, &invariant_locals)
+                        && self.is_safe_to_hoist(rval)
                     {
                         invariant_locals.insert(*local);
                         invariant_stmts.push((bb_id, i));
@@ -164,189 +151,10 @@ impl Licm {
         }
     }
 
+    // Preheader code runs before the loop guard. Only constants are safe
+    // because every operation that can fault must remain under that guard.
     fn is_safe_to_hoist(&self, rval: &Rvalue) -> bool {
-        matches!(
-            rval,
-            Rvalue::Use(_)
-                | Rvalue::UnaryOp(_, _)
-                | Rvalue::BinaryOp(_, _, _)
-                | Rvalue::GetIndex(_, _, _)
-        )
-    }
-
-    /// `GetIndex` reads through a pointer, so its result only stays valid
-    /// while the container is untouched. `defined_in_loop` cannot see
-    /// mutation that happens behind a call argument (`xs.append(..)` lowers
-    /// to a call taking `xs`, not to a statement naming `xs` as a target),
-    /// and list calls can also reallocate the element storage. Reuse the
-    /// py-len gate: the object local may appear in the loop body only as the
-    /// direct object of another `GetIndex` (or a pure-read call argument).
-    fn container_not_mutated_behind_calls(
-        &self,
-        rval: &Rvalue,
-        func: &MirFunction,
-        body: &HashSet<BasicBlockId>,
-    ) -> bool {
-        let Rvalue::GetIndex(obj, _, _) = rval else {
-            return true;
-        };
-        let Some(obj_local) = Self::operand_local(obj) else {
-            return false;
-        };
-        Self::pyobj_untouched_except_reads(func, body, obj_local)
-    }
-
-    /// A `__olive_py_len(x)` call is loop-invariant, and safe to hoist past
-    /// any GIL/exception cost it carries, exactly when `x` is never mutated
-    /// or handed to anything that could mutate it inside the loop --
-    /// `PyObject_Length` on a live Python object can only change value if
-    /// the object itself changes. Deliberately narrow: this recognizes
-    /// exactly one callee name and requires every other appearance of `x`
-    /// in the loop body to be a plain `GetIndex` read (`x[i]`) or the
-    /// len-call operand itself. Anything else -- `x` copied into another
-    /// local, passed to any other call, targeted by `SetAttr`/`SetIndex`,
-    /// dropped -- disqualifies it: any of those could plausibly resize or
-    /// replace what `x` points at.
-    fn is_hoistable_py_len_call(
-        &self,
-        rval: &Rvalue,
-        func: &MirFunction,
-        body: &HashSet<BasicBlockId>,
-        defined_in_loop: &HashSet<Local>,
-        invariant_locals: &HashSet<Local>,
-    ) -> bool {
-        let Rvalue::Call { func: callee, args } = rval else {
-            return false;
-        };
-        let Operand::Constant(Constant::Function(name)) = callee else {
-            return false;
-        };
-        if name != "__olive_py_len" || args.len() != 1 {
-            return false;
-        }
-        let Some(target) = Self::operand_local(&args[0]) else {
-            return false;
-        };
-        if !self.is_op_invariant(&args[0], defined_in_loop, invariant_locals) {
-            return false;
-        }
-        Self::pyobj_untouched_except_reads(func, body, target)
-    }
-
-    fn operand_local(op: &Operand) -> Option<Local> {
-        match op {
-            Operand::Copy(l) | Operand::Move(l) => Some(*l),
-            Operand::Constant(_) => None,
-        }
-    }
-
-    fn operand_is_local(op: &Operand, target: Local) -> bool {
-        Self::operand_local(op) == Some(target)
-    }
-
-    /// Every place `target` could appear in an `Rvalue`, generically --
-    /// used to prove a local is untouched without hardcoding which variants
-    /// exist; a variant this misses is a compile error the day it's added
-    /// to `Rvalue`, not a silent soundness hole here.
-    fn rvalue_operands(rval: &Rvalue) -> Vec<&Operand> {
-        match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => vec![op],
-            Rvalue::BinaryOp(_, l, r) => vec![l, r],
-            Rvalue::Call { func, args } => {
-                let mut v = vec![func];
-                v.extend(args.iter());
-                v
-            }
-            Rvalue::Aggregate(_, ops) => ops.iter().collect(),
-            Rvalue::Cast(op, _) => vec![op],
-            Rvalue::GetAttr(op, _) => vec![op],
-            Rvalue::GetIndex(obj, idx, _) => vec![obj, idx],
-            Rvalue::GetTag(op) | Rvalue::GetTypeId(op) => vec![op],
-            Rvalue::VectorSplat(op, _) | Rvalue::VectorReduce(_, op, _) => vec![op],
-            Rvalue::VectorLoad(a, b, _) => vec![a, b],
-            Rvalue::VectorFMA(a, b, c) => vec![a, b, c],
-            Rvalue::PtrLoad(op) | Rvalue::FatPtrData(op) => vec![op],
-            Rvalue::VTableLoad { vtable, .. } => vec![vtable],
-            Rvalue::GenOf(op) => vec![op],
-            Rvalue::Ref(_) | Rvalue::MutRef(_) => vec![],
-        }
-    }
-
-    fn pyobj_untouched_except_reads(
-        func: &MirFunction,
-        body: &HashSet<BasicBlockId>,
-        target: Local,
-    ) -> bool {
-        for &bb_id in body {
-            for stmt in &func.basic_blocks[bb_id.0].statements {
-                match &stmt.kind {
-                    StatementKind::Assign(_, Rvalue::GetIndex(obj, idx, _)) => {
-                        if Self::operand_is_local(idx, target) {
-                            return false;
-                        }
-                        let _ = obj; // reading target[idx] is the one allowed use.
-                    }
-                    StatementKind::Assign(_, rval @ Rvalue::Call { func: callee, args }) => {
-                        let is_pure_read_of_target = matches!(
-                            callee,
-                            Operand::Constant(Constant::Function(n))
-                                if PURE_READ_CALLS.contains(&n.as_str())
-                        ) && args
-                            .first()
-                            .is_some_and(|a| Self::operand_is_local(a, target))
-                            && args[1..].iter().all(|a| !Self::operand_is_local(a, target));
-                        if !is_pure_read_of_target
-                            && Self::rvalue_operands(rval)
-                                .iter()
-                                .any(|op| Self::operand_is_local(op, target))
-                        {
-                            return false;
-                        }
-                    }
-                    StatementKind::Assign(_, rval) => {
-                        if Self::rvalue_operands(rval)
-                            .iter()
-                            .any(|op| Self::operand_is_local(op, target))
-                        {
-                            return false;
-                        }
-                    }
-                    StatementKind::SetAttr(obj, _, val) => {
-                        if Self::operand_is_local(obj, target)
-                            || Self::operand_is_local(val, target)
-                        {
-                            return false;
-                        }
-                    }
-                    StatementKind::SetIndex(obj, idx, val, _) => {
-                        if Self::operand_is_local(obj, target)
-                            || Self::operand_is_local(idx, target)
-                            || Self::operand_is_local(val, target)
-                        {
-                            return false;
-                        }
-                    }
-                    StatementKind::VectorStore(obj, idx, val) => {
-                        if Self::operand_is_local(obj, target)
-                            || Self::operand_is_local(idx, target)
-                            || Self::operand_is_local(val, target)
-                        {
-                            return false;
-                        }
-                    }
-                    StatementKind::PtrStore(ptr, val) => {
-                        if Self::operand_is_local(ptr, target)
-                            || Self::operand_is_local(val, target)
-                        {
-                            return false;
-                        }
-                    }
-                    StatementKind::Drop(l) if *l == target => return false,
-                    _ => {}
-                }
-            }
-        }
-        true
+        matches!(rval, Rvalue::Use(Operand::Constant(_)))
     }
 
     fn hoist_invariants(
@@ -651,19 +459,12 @@ mod tests {
     }
 
     #[test]
-    fn hoists_py_len_call_when_container_is_untouched() {
+    fn does_not_hoist_python_calls_before_the_loop_guard() {
         let mut f = py_len_loop_func(vec![]);
         let changed = Licm.run(&mut f);
-        assert!(changed);
-        assert_eq!(
-            count_py_len_calls(&f),
-            1,
-            "hoisting must not duplicate the call"
-        );
-        assert!(
-            !len_call_is_in_loop_body(&f),
-            "the len call must have moved out of the loop"
-        );
+        assert!(!changed);
+        assert_eq!(count_py_len_calls(&f), 1);
+        assert!(len_call_is_in_loop_body(&f));
     }
 
     #[test]

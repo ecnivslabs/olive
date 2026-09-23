@@ -73,14 +73,12 @@ fn make_result(ok: bool, payload: i64) -> i64 {
 /// pointers never classify as slab bodies.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_result(ptr: i64) {
-    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+    if !crate::is_kind(ptr, KIND_RESULT) {
         return;
     }
-    if crate::slab::slot_is_live(ptr) {
-        let payload = unsafe { (*(ptr as *const OliveResult)).payload };
-        crate::olive_free_any(payload);
-    }
+    let payload = unsafe { (*(ptr as *const OliveResult)).payload };
     free_slot(ptr);
+    crate::olive_free_any(payload);
 }
 
 fn free_result_slot_local(ptr: i64) {
@@ -104,13 +102,16 @@ pub extern "C" fn olive_result_is_ok(r: i64) -> i64 {
     if r == 0 {
         return 0;
     }
+    if !crate::is_kind(r, KIND_RESULT) {
+        return 0;
+    }
     let obj = unsafe { &*(r as *const OliveResult) };
     obj.tag
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_is_err(r: i64) -> i64 {
-    if r == 0 {
+    if !crate::is_kind(r, KIND_RESULT) {
         return 1;
     }
     let obj = unsafe { &*(r as *const OliveResult) };
@@ -124,6 +125,9 @@ pub extern "C" fn olive_result_is_err(r: i64) -> i64 {
 pub extern "C" fn olive_result_unwrap(r: i64) -> i64 {
     if r == 0 {
         abort_unwrap("unwrap called on null result");
+    }
+    if !crate::is_kind(r, KIND_RESULT) {
+        abort_unwrap("unwrap called on invalid result");
     }
     let obj = unsafe { &*(r as *const OliveResult) };
     let payload = obj.payload;
@@ -147,6 +151,9 @@ pub extern "C" fn olive_result_unwrap_err(r: i64) -> i64 {
     if r == 0 {
         abort_unwrap("unwrap_err called on null result");
     }
+    if !crate::is_kind(r, KIND_RESULT) {
+        abort_unwrap("unwrap_err called on invalid result");
+    }
     let obj = unsafe { &*(r as *const OliveResult) };
     let payload = obj.payload;
     if obj.tag == 1 {
@@ -159,13 +166,16 @@ pub extern "C" fn olive_result_unwrap_err(r: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_unwrap_or(r: i64, default: i64) -> i64 {
-    if r == 0 {
+    if !crate::is_kind(r, KIND_RESULT) {
         return default;
     }
     let obj = unsafe { &*(r as *const OliveResult) };
     if obj.tag == 1 {
         let out = obj.payload;
         free_slot(r);
+        if default != out {
+            crate::olive_free_any(default);
+        }
         out
     } else {
         olive_free_result(r);
@@ -177,7 +187,7 @@ pub extern "C" fn olive_result_unwrap_or(r: i64, default: i64) -> i64 {
 /// payload is released with its result.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_err_msg(r: i64) -> i64 {
-    if r == 0 {
+    if !crate::is_kind(r, KIND_RESULT) {
         return olive_str_internal("");
     }
     let obj = unsafe { &*(r as *const OliveResult) };
@@ -251,8 +261,21 @@ mod tests {
     }
 
     #[test]
-    fn result_ok_err_msg_zero() {
-        let r = olive_result_ok(1);
-        assert_eq!(olive_result_err_msg(r), 0);
+    fn result_rejects_raw_struct_with_matching_header() {
+        let raw = crate::struct_obj::olive_struct_alloc(9);
+        unsafe { *((raw + 8) as *mut i64) = 123 };
+        assert_eq!(olive_result_is_ok(raw), 0);
+        assert_eq!(olive_result_is_err(raw), 1);
+        assert_eq!(olive_result_unwrap_or(raw, 7), 7);
+        olive_free_result(raw);
+        crate::struct_obj::olive_free_struct(raw);
+    }
+
+    #[test]
+    fn result_cycle_frees_without_recursing_into_live_outer_slot() {
+        let result = olive_result_ok(0);
+        unsafe { (*(result as *mut OliveResult)).payload = result };
+        olive_free_result(result);
+        assert!(!crate::slab::slot_is_live(result));
     }
 }

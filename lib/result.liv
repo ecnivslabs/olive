@@ -1,8 +1,10 @@
 fn ok(val) -> obj:
-    return __olive_result_ok(val)
+    let owned = __olive_relocate_any(val)
+    return __olive_result_ok(owned)
 
 fn err(msg: str) -> obj:
-    return __olive_result_err(msg)
+    let owned = __olive_relocate_any(msg)
+    return __olive_result_err(owned)
 
 fn is_ok(r) -> bool:
     return __olive_result_is_ok(r) == 1
@@ -20,7 +22,8 @@ fn unwrap_err(r) -> str:
     return e
 
 fn unwrap_or(r, default):
-    return __olive_result_unwrap_or(r, default)
+    let owned = __olive_relocate_any(default)
+    return __olive_result_unwrap_or(r, owned)
 
 fn err_msg(r) -> str:
     let e = __olive_result_err_msg(r)

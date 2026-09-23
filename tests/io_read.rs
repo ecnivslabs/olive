@@ -32,17 +32,43 @@ fn main():
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn file_read_reports_io_errors_instead_of_returning_an_invalid_string() {
+fn read_n_reports_invalid_and_dead_handles_as_none() {
+    assert_both(
+        r#"import io
+
+fn main():
+    let path = io.temp_file()
+    io.write_file(path, "abcdef")
+    let file = io.open(path, "r")
+    let value = io.read_n(file.handle, 3)
+    if value == None:
+        print("none")
+    else:
+        print(value)
+    print(io.read_n(file.handle, -1) == None)
+    print(io.read_n(file.handle, 9223372036854775807) == None)
+    let stale = file.handle
+    file.close()
+    print(io.read_n(stale, 1) == None)
+    io.delete(path)
+"#,
+        "abc\nTrue\nTrue\nTrue\n",
+    );
+}
+
+#[test]
+fn file_read_rejects_write_only_handles() {
     assert_fault_both(
         r#"import io
 
 fn main():
-    let file = io.open(".", "r")
+    let path = io.temp_file()
+    let file = io.open(path, "w")
     print(file.read())
+    io.delete(path)
 "#,
         "[E0700]",
-        "file exceeds the maximum readable size",
+        "file is not readable",
     );
 }

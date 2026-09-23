@@ -92,6 +92,9 @@ pub(crate) fn is_kind(val: i64, expected: i64) -> bool {
     if !is_active_object(val) {
         return false;
     }
+    if expected == KIND_PYOBJECT {
+        return python::python_coerce::is_arena_ptr(val as usize);
+    }
     let actual = unsafe { *(val as *const i64) };
     if expected == KIND_LIST | KIND_ANY_LIST {
         return (actual == KIND_LIST || actual == KIND_ANY_LIST) && list::owns_list(val);
@@ -230,7 +233,7 @@ fn classify_typed_key(v: i64, desc: *const u8, pos: usize) -> Option<KeyClass> {
         | format::D_NULL => {
             if is_active_object(v) {
                 let kind = unsafe { *(v as *const i64) };
-                if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) {
+                if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) && is_kind(v, kind) {
                     let b = unsafe { &*(v as *const boxed::OliveBoxed) };
                     return Some(KeyClass::Scalar(kind, b.bits));
                 }
@@ -315,7 +318,7 @@ fn classify_key(v: i64) -> KeyClass {
 }
 
 fn bytes_key(value: i64) -> Option<&'static [u8]> {
-    if !is_active_object(value) || unsafe { *(value as *const i64) } != KIND_BYTES {
+    if !is_kind(value, KIND_BYTES) {
         return None;
     }
     Some(unsafe { &*(value as *const bytes::OliveBytes) }.as_slice())
@@ -1258,18 +1261,15 @@ fn any_is_str(v: i64) -> bool {
 }
 
 fn any_is_float(v: i64) -> bool {
-    is_active_object(v) && unsafe { *(v as *const i64) } == KIND_FLOAT
+    is_kind(v, KIND_FLOAT)
 }
 
 fn any_is_u64(v: i64) -> bool {
-    is_active_object(v) && unsafe { *(v as *const i64) } == KIND_U64
+    is_kind(v, KIND_U64)
 }
 
 fn any_is_list(v: i64) -> bool {
-    is_active_object(v) && {
-        let k = unsafe { *(v as *const i64) };
-        k == KIND_LIST || k == KIND_ANY_LIST
-    }
+    is_kind(v, KIND_LIST | KIND_ANY_LIST)
 }
 
 /// Arithmetic on `Any` operands: a float on either side promotes to float,
@@ -1492,7 +1492,7 @@ fn is_numeric_membership_word(v: i64) -> bool {
     }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };
-        return kind == KIND_INT || kind == KIND_U64 || kind == KIND_FLOAT;
+        return matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) && is_kind(v, kind);
     }
     !is_tagged_str_key(v) && !crate::string::is_interned_char(v)
 }

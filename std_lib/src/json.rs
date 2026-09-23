@@ -64,7 +64,7 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
         _ => {}
     }
     // A tagged string pointer carries bit 0.
-    if val > 0x10000 && val & 1 != 0 {
+    if crate::is_tagged_str_key(val) || crate::string::is_interned_char(val) {
         return serde_json::Value::String(olive_str_from_ptr(val));
     }
     // Values below MIN_HEAP_PTR are not valid pointers and are treated as integers.
@@ -105,7 +105,12 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
             let obj = unsafe { &*(val as *const OliveObj) };
             let mut map = serde_json::Map::new();
             for (k, &v) in &obj.fields {
-                map.insert(olive_str_from_ptr(k.0), olive_to_json(v));
+                let key = if crate::is_tagged_str_key(k.0) || crate::string::is_interned_char(k.0) {
+                    olive_str_from_ptr(k.0)
+                } else {
+                    olive_to_json(k.0).to_string()
+                };
+                map.insert(key, olive_to_json(v));
             }
             serde_json::Value::Object(map)
         }
@@ -223,6 +228,17 @@ mod tests {
     fn stringify_null() {
         let result = olive_json_stringify(0);
         assert_eq!(from_ptr(result), "null");
+    }
+
+    #[test]
+    fn stringify_non_string_dict_key_uses_json_key_text() {
+        let mut fields = HashMap::default();
+        fields.insert(crate::OliveStringKey(1), s("a"));
+        let ptr = crate::obj::new_obj_from_map(fields);
+        let out = olive_json_stringify(ptr);
+        assert_eq!(from_ptr(out), r#"{"1":"a"}"#);
+        crate::olive_free_obj(ptr);
+        crate::olive_free_str(out);
     }
 
     #[test]

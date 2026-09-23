@@ -32,6 +32,7 @@ struct PipeBuf {
     cvar: Condvar,
     stop: AtomicU32,
     idle: AtomicU32,
+    truncated: AtomicU32,
 }
 
 impl PipeBuf {
@@ -42,6 +43,7 @@ impl PipeBuf {
             cvar: Condvar::new(),
             stop: AtomicU32::new(0),
             idle: AtomicU32::new(0),
+            truncated: AtomicU32::new(0),
         })
     }
 
@@ -49,6 +51,7 @@ impl PipeBuf {
         self.idle.store(0, Ordering::Release);
         let mut buf = self.data.lock().unwrap();
         if chunk.len() >= MAX_BUFFERED_BYTES {
+            self.truncated.store(1, Ordering::Release);
             buf.clear();
             buf.extend_from_slice(&chunk[chunk.len() - MAX_BUFFERED_BYTES..]);
         } else {
@@ -57,6 +60,7 @@ impl PipeBuf {
                 .saturating_add(chunk.len())
                 .saturating_sub(MAX_BUFFERED_BYTES);
             if overflow > 0 {
+                self.truncated.store(1, Ordering::Release);
                 buf.drain(..overflow);
             }
             buf.extend_from_slice(chunk);
@@ -104,8 +108,7 @@ impl PipeBuf {
         }
     }
 
-    fn wait_after_exit(&self, done: &AtomicU32) {
-        let deadline = Instant::now() + Duration::from_secs(1);
+    fn wait_after_exit(&self, done: &AtomicU32, deadline: Instant) {
         let quiet_required = Duration::from_millis(50);
         let mut idle_since = None;
         while done.load(Ordering::Acquire) == 0
@@ -129,6 +132,10 @@ impl PipeBuf {
         }
     }
 
+    fn was_truncated(&self) -> bool {
+        self.truncated.load(Ordering::Acquire) != 0
+    }
+
     fn request_stop(&self) {
         self.stop.store(1, Ordering::Release);
         self.cvar.notify_all();
@@ -146,7 +153,7 @@ fn spawn_reader(
     mut src: impl Read + std::os::fd::AsRawFd + Send + 'static,
     buf: Arc<PipeBuf>,
     done: Arc<AtomicU32>,
-) {
+) -> std::thread::JoinHandle<()> {
     let fd = src.as_raw_fd();
     let current_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if current_flags >= 0 {
@@ -174,7 +181,7 @@ fn spawn_reader(
         }
         done.store(1, Ordering::Release);
         buf.notify_drained();
-    });
+    })
 }
 
 #[cfg(windows)]
@@ -182,7 +189,7 @@ fn spawn_reader(
     mut src: impl Read + std::os::windows::io::AsRawHandle + Send + 'static,
     buf: Arc<PipeBuf>,
     done: Arc<AtomicU32>,
-) {
+) -> std::thread::JoinHandle<()> {
     use std::os::windows::io::AsRawHandle;
 
     #[link(name = "kernel32")]
@@ -197,8 +204,8 @@ fn spawn_reader(
         ) -> i32;
     }
 
-    let handle = src.as_raw_handle();
     std::thread::spawn(move || {
+        let handle = src.as_raw_handle();
         let mut chunk = [0u8; 8192];
         loop {
             if buf.stop.load(Ordering::Acquire) != 0 {
@@ -233,11 +240,15 @@ fn spawn_reader(
         }
         done.store(1, Ordering::Release);
         buf.notify_drained();
-    });
+    })
 }
 
 #[cfg(not(any(unix, windows)))]
-fn spawn_reader(mut src: impl Read + Send + 'static, buf: Arc<PipeBuf>, done: Arc<AtomicU32>) {
+fn spawn_reader(
+    mut src: impl Read + Send + 'static,
+    buf: Arc<PipeBuf>,
+    done: Arc<AtomicU32>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
         while buf.stop.load(Ordering::Acquire) == 0 {
@@ -250,7 +261,7 @@ fn spawn_reader(mut src: impl Read + Send + 'static, buf: Arc<PipeBuf>, done: Ar
         }
         done.store(1, Ordering::Release);
         buf.notify_drained();
-    });
+    })
 }
 
 const EXIT_UNKNOWN: i64 = i64::MIN;
@@ -283,6 +294,9 @@ struct ChildEntry {
     stderr_buf: Arc<PipeBuf>,
     stdout_done: Arc<AtomicU32>,
     stderr_done: Arc<AtomicU32>,
+    stdout_reader: Option<std::thread::JoinHandle<()>>,
+    stderr_reader: Option<std::thread::JoinHandle<()>>,
+    drain_deadline: Arc<Mutex<Option<Instant>>>,
 }
 
 fn table() -> &'static Mutex<HashMap<i64, ChildEntry>> {
@@ -411,10 +425,12 @@ pub extern "C" fn olive_process_spawn(
     let stderr_buf = PipeBuf::new();
     let stdout_done = Arc::new(AtomicU32::new(0));
     let stderr_done = Arc::new(AtomicU32::new(0));
+    let mut stdout_reader = None;
+    let mut stderr_reader = None;
 
     if stdout_mode == STDIO_PIPE {
         if let Some(out) = child.stdout.take() {
-            spawn_reader(out, stdout_buf.clone(), stdout_done.clone());
+            stdout_reader = Some(spawn_reader(out, stdout_buf.clone(), stdout_done.clone()));
         } else {
             stdout_done.store(1, Ordering::SeqCst);
         }
@@ -424,7 +440,7 @@ pub extern "C" fn olive_process_spawn(
 
     if stderr_mode == STDIO_PIPE {
         if let Some(err) = child.stderr.take() {
-            spawn_reader(err, stderr_buf.clone(), stderr_done.clone());
+            stderr_reader = Some(spawn_reader(err, stderr_buf.clone(), stderr_done.clone()));
         } else {
             stderr_done.store(1, Ordering::SeqCst);
         }
@@ -445,6 +461,9 @@ pub extern "C" fn olive_process_spawn(
             stderr_buf,
             stdout_done,
             stderr_done,
+            stdout_reader,
+            stderr_reader,
+            drain_deadline: Arc::new(Mutex::new(None)),
         },
     );
 
@@ -574,6 +593,7 @@ struct PipeSnapshot {
     child: Arc<ChildShared>,
     buf: Arc<PipeBuf>,
     done: Arc<AtomicU32>,
+    drain_deadline: Arc<Mutex<Option<Instant>>>,
 }
 
 fn pipe_snapshot(handle: i64, stderr: bool) -> Option<PipeSnapshot> {
@@ -588,12 +608,20 @@ fn pipe_snapshot(handle: i64, stderr: bool) -> Option<PipeSnapshot> {
             &e.stdout_done
         })
         .clone(),
+        drain_deadline: e.drain_deadline.clone(),
     })
 }
 
 fn drain_pipe(snap: &PipeSnapshot) -> String {
+    if snap.child.exit_code().is_none() {
+        let _ = wait_for_exit(&snap.child, Some(Duration::from_millis(1)));
+    }
     if snap.child.exit_code().is_some() {
-        snap.buf.wait_after_exit(&snap.done);
+        let deadline = {
+            let mut shared = snap.drain_deadline.lock().unwrap();
+            *shared.get_or_insert_with(|| Instant::now() + Duration::from_secs(1))
+        };
+        snap.buf.wait_after_exit(&snap.done, deadline);
         snap.buf.take_text(&snap.done, true)
     } else {
         snap.buf.wait_for_data(&snap.done);
@@ -625,6 +653,24 @@ pub extern "C" fn olive_process_read_stderr(handle: i64) -> i64 {
     } else {
         olive_str_internal(&text)
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_process_stdout_truncated(handle: i64) -> i64 {
+    table()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .is_some_and(|entry| entry.stdout_buf.was_truncated()) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_process_stderr_truncated(handle: i64) -> i64 {
+    table()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .is_some_and(|entry| entry.stderr_buf.was_truncated()) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -721,10 +767,22 @@ pub extern "C" fn olive_process_signal_code(handle: i64) -> i64 {
         .unwrap_or(0)
 }
 
-#[unsafe(no_mangle)]
-/// Dropping a live handle kills and reaps the direct child with a bounded wait,
+fn stop_reader(reader: Option<std::thread::JoinHandle<()>>) {
+    let Some(reader) = reader else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while !reader.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(WAIT_POLL_INTERVAL);
+    }
+    if reader.is_finished() {
+        let _ = reader.join();
+    }
+}
+
 /// then stops pipe readers so inherited descriptors cannot retain runtime
 /// threads after the handle disappears.
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_process_close(handle: i64) {
     let entry = {
         let mut table = table().lock().unwrap();
@@ -749,10 +807,15 @@ pub extern "C" fn olive_process_close(handle: i64) {
         };
         if should_wait {
             wait_for_exit(&entry.child, Some(Duration::from_secs(1)));
+            if entry.child.exit_code().is_none() {
+                let _ = wait_for_exit(&entry.child, None);
+            }
         }
     }
     entry.stdout_buf.request_stop();
     entry.stderr_buf.request_stop();
+    stop_reader(entry.stdout_reader);
+    stop_reader(entry.stderr_reader);
 }
 
 #[cfg(test)]
@@ -844,6 +907,9 @@ mod tests {
                 stderr_buf: PipeBuf::new(),
                 stdout_done: Arc::new(AtomicU32::new(1)),
                 stderr_done: Arc::new(AtomicU32::new(1)),
+                stdout_reader: None,
+                stderr_reader: None,
+                drain_deadline: Arc::new(Mutex::new(None)),
             },
         );
 
@@ -884,6 +950,9 @@ mod tests {
                 stderr_buf: PipeBuf::new(),
                 stdout_done: Arc::new(AtomicU32::new(1)),
                 stderr_done: Arc::new(AtomicU32::new(1)),
+                stdout_reader: None,
+                stderr_reader: None,
+                drain_deadline: Arc::new(Mutex::new(None)),
             },
         );
 
@@ -904,6 +973,16 @@ mod tests {
         buf.push(&[0x82, 0xac]);
         done.store(1, Ordering::SeqCst);
         assert_eq!(buf.take_text(&done, true), "€");
+    }
+
+    #[test]
+    fn pipe_cap_records_truncation() {
+        let buf = PipeBuf::new();
+        let done = AtomicU32::new(0);
+        buf.push(&vec![b'x'; MAX_BUFFERED_BYTES + 1]);
+        assert!(buf.was_truncated());
+        assert_eq!(buf.take_text(&done, true).len(), MAX_BUFFERED_BYTES);
+        assert!(buf.was_truncated());
     }
 
     #[test]

@@ -1,8 +1,9 @@
-use crate::string_slab::{str_body, str_is_heap};
+use crate::string_slab::{str_body, str_is_heap, str_is_literal};
 use crate::*;
 
 /// Converts an Olive string pointer (tagged or untagged) to a byte slice.
-/// O(1) for slab-backed strings; O(N) fallback via CStr for literals.
+/// Heap and length-bearing literal strings are O(1); foreign C strings use a
+/// bounded NUL-terminated fallback.
 pub fn olive_str_to_bytes<'a>(ptr: i64) -> &'a [u8] {
     olive_str_to_bytes_with(ptr, None)
 }
@@ -14,10 +15,20 @@ pub fn olive_str_to_bytes_with<'a>(ptr: i64, known_heap: Option<bool>) -> &'a [u
         return b"";
     }
     let p = str_body(ptr);
+    if is_interned_char(ptr) {
+        let base = CHAR_STRS.0.as_ptr() as i64;
+        let index = (p - base) as usize;
+        if index < 256 {
+            return &CHAR_STRS.0[index][..1];
+        }
+    }
     let is_heap = known_heap.unwrap_or_else(|| str_is_heap(ptr));
     if is_heap {
         let header_val = unsafe { *(p as *const usize).sub(2) };
         let len = header_val & 0xFFFFFFFFFFFF;
+        unsafe { std::slice::from_raw_parts(p as *const u8, len) }
+    } else if str_is_literal(ptr) {
+        let len = unsafe { *(p as *const usize).sub(1) };
         unsafe { std::slice::from_raw_parts(p as *const u8, len) }
     } else {
         unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char).to_bytes() }
@@ -94,16 +105,14 @@ fn str_char_at(s: i64, i: i64, loc: i64, checked: bool) -> i64 {
 /// Interned single-byte strings, NUL-terminated like any literal. Indexing
 /// and per-char iteration return these instead of allocating, and the free
 /// path already ignores pointers outside the slab span.
-#[repr(C, align(4))]
-pub struct CharTable([[u8; 4]; 256]);
+#[repr(C, align(8))]
+pub struct CharTable([[u8; 8]; 256]);
 
-// 4-byte stride from a 4-aligned base keeps bit0 and bit1 clear on every
-// entry, so an interned char pointer never reads as a tagged heap string.
-// Exported because codegen indexes it directly to inline `s[i]`; the stride
-// is part of that contract, so changing it means changing the emitted shift.
+// Eight-byte stride from an eight-aligned base keeps all low tag bits clear on
+// every entry, so an interned char pointer never reads as a tagged string.
 #[unsafe(export_name = "olive_char_table")]
 pub static CHAR_STRS: CharTable = {
-    let mut t = [[0u8; 4]; 256];
+    let mut t = [[0u8; 8]; 256];
     let mut i = 0;
     while i < 256 {
         t[i][0] = i as u8;
@@ -123,8 +132,10 @@ pub(crate) fn char_str(byte: u8) -> i64 {
 /// `Str` or cross-representation lookups (`d[s[i]]` vs `d["a"]`) miss.
 pub(crate) fn is_interned_char(v: i64) -> bool {
     let base = CHAR_STRS.0.as_ptr() as i64;
-    let body = v & !(crate::string_slab::STR_TAG | crate::string_slab::STR_HEAP);
-    body >= base && body < base + 1024
+    let body = v & !(crate::string_slab::STR_TAG
+        | crate::string_slab::STR_HEAP
+        | crate::string_slab::STR_LITERAL);
+    body >= base && body < base + 2048
 }
 
 #[unsafe(no_mangle)]
@@ -245,6 +256,19 @@ mod get_checked_tests {
         let c = char_str(b'a');
         assert_eq!(crate::olive_is_str(c), 1);
         assert_eq!(crate::olive_str_from_ptr(crate::olive_typeof_str(c)), "str");
+    }
+
+    #[test]
+    fn interned_nul_char_has_length_one() {
+        let c = char_str(0);
+        assert!(is_interned_char(c));
+        assert_eq!(olive_str_to_bytes(c), &[0]);
+        assert_eq!(olive_str_len(c), 1);
+        assert_eq!(olive_str_len(olive_str_get_checked(c, 0, 0)), 1);
+        let source = olive_str_internal("a\0b");
+        assert_eq!(olive_str_len(olive_str_get_checked(source, 0, 0)), 1);
+        assert_eq!(olive_str_len(olive_str_get_checked(source, 1, 0)), 1);
+        crate::olive_free_str(source);
     }
 
     #[test]

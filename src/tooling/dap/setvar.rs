@@ -137,10 +137,13 @@ pub(crate) fn target_for_child(
         .ok_or_else(|| format!("no such member: {name}"))?;
     let child_ty = children[pos].2.clone();
     let target = match &concrete {
-        Type::List(_) | Type::Vector(_, _) | Type::Set(_) | Type::Tuple(_) => WriteTarget::Seq {
+        Type::List(_) | Type::Vector(_, _) | Type::Tuple(_) => WriteTarget::Seq {
             parent: parent_raw,
             idx: pos as i64,
         },
+        Type::Set(_) => {
+            return Err("set elements are not addressable; replace the set as a whole".to_string());
+        }
         Type::Dict(_, _) => WriteTarget::DictVal {
             parent: parent_raw,
             idx: pos as i64,
@@ -297,11 +300,22 @@ fn build_value(
         return value_to_raw(session, ty, value);
     }
     match concrete_ty(ty) {
-        Type::List(elem_ty) | Type::Vector(elem_ty, _) | Type::Set(elem_ty) => {
+        Type::List(elem_ty) | Type::Vector(elem_ty, _) => {
             let AExpr::List(items) = expr else {
                 return Err(format!("expected a list literal for {ty}"));
             };
             build_seq(session, frame_idx, elem_ty, items)
+        }
+        Type::Set(elem_ty) => {
+            let AExpr::List(items) = expr else {
+                return Err(format!("expected a list literal for {ty}"));
+            };
+            let ptr = call_alloc1(session, "olive_set_new", items.len() as i64)?;
+            for item in items {
+                let raw = build_value(session, frame_idx, elem_ty, item)?;
+                call_set_add(session, ptr, raw)?;
+            }
+            Ok(ptr)
         }
         Type::Tuple(item_tys) => {
             let AExpr::Tuple(items) = expr else {
@@ -398,14 +412,14 @@ fn build_value(
             // codegen-built ones do, so their payloads free precisely.
             // The descriptor is only read during the call, so a host-side
             // pointer is fine (same trick as `obj_set_typed` above).
-            let desc = build_descriptor(session, concrete_ty(ty));
+            let desc = session.intern_debug_descriptor(concrete_ty(ty))?;
             let ptr = call_alloc4(
                 session,
                 "olive_enum_new",
                 type_id,
                 tag as i64,
                 payload_tys.len() as i64,
-                desc.as_ptr() as i64,
+                desc,
             )?;
             for (i, (pty, arg)) in payload_tys.iter().zip(args).enumerate() {
                 let raw = build_value(session, frame_idx, pty, arg)?;
@@ -680,6 +694,18 @@ pub(crate) fn write_value(
             Ok(())
         }
     }
+}
+
+fn call_set_add(session: &EngineShared, set_ptr: i64, raw: i64) -> Result<(), String> {
+    if set_ptr == 0 {
+        return Err("cannot add an element to a null set".to_string());
+    }
+    let Some(ptr) = session.runtime_symbol("olive_set_add") else {
+        return Err("runtime symbol olive_set_add unavailable".to_string());
+    };
+    let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(ptr) };
+    f(set_ptr, raw);
+    Ok(())
 }
 
 fn call_setter(

@@ -23,6 +23,31 @@ fn py_int_conversion_name(func_mir: &MirFunction, operand: &Operand) -> &'static
     }
 }
 
+fn integer_operand_type(func_mir: &MirFunction, operand: &Operand) -> Option<Type> {
+    let ty = super::imports::operand_static_type(operand, func_mir);
+    super::translate_rvalue::integer_cl_type(&ty)
+}
+
+fn common_integer_type(
+    func_mir: &MirFunction,
+    lhs: &Operand,
+    rhs: &Operand,
+) -> Option<(Type, bool)> {
+    let lhs_type = integer_operand_type(func_mir, lhs)?;
+    let rhs_type = integer_operand_type(func_mir, rhs)?;
+    let target = if lhs_type == rhs_type {
+        lhs_type
+    } else if lhs_type == types::I64 {
+        rhs_type
+    } else if rhs_type == types::I64 {
+        lhs_type
+    } else {
+        types::I64
+    };
+    let unsigned = is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs);
+    Some((target, unsigned))
+}
+
 impl<M: Module> CraneliftCodegen<M> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_binop(
@@ -46,6 +71,17 @@ impl<M: Module> CraneliftCodegen<M> {
     ) -> Value {
         let l = Self::translate_operand(builder, lhs, vars, string_ids, module, func_ids);
         let r = Self::translate_operand(builder, rhs, vars, string_ids, module, func_ids);
+        let (l, r) = if let Some((target, unsigned)) = common_integer_type(func_mir, lhs, rhs)
+            && !is_any_op(func_mir, lhs)
+            && !is_any_op(func_mir, rhs)
+        {
+            (
+                super::translate_rvalue::coerce_integer_value(builder, l, target, unsigned),
+                super::translate_rvalue::coerce_integer_value(builder, r, target, unsigned),
+            )
+        } else {
+            (l, r)
+        };
 
         // f32 locals and untyped float constants (always emitted as f64 by
         // `translate_operand`) can reach the same binop with mismatched
@@ -171,8 +207,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         .get(profiled_name)
                         .unwrap_or_else(|| panic!("missing {profiled_name}"));
                     let local_func = module.declare_func_in_func(*fid, builder.func);
-                    let local_data = module.declare_data_in_func(site_id, builder.func);
-                    let site_ptr = builder.ins().symbol_value(types::I64, local_data);
+                    let site_ptr = super::setup::strings::literal_body(builder, module, site_id);
 
                     if specialize_sites.contains(&site_index) {
                         return Self::translate_any_binop_specialized(
@@ -571,7 +606,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.inst_results(inst)[0]
                 } else {
                     let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
-                    let inst = builder.ins().call(local_func, &[l, r, loc]);
+                    let unsigned = is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs);
+                    let pow_l = super::translate_rvalue::widen_integer_value(builder, l, unsigned);
+                    let pow_r = super::translate_rvalue::widen_integer_value(builder, r, unsigned);
+                    let inst = builder.ins().call(local_func, &[pow_l, pow_r, loc]);
                     builder.inst_results(inst)[0]
                 }
             }
@@ -646,7 +684,20 @@ impl<M: Module> CraneliftCodegen<M> {
                     (types::F64, Some(types::F32)) => builder.ins().fdemote(types::F32, l),
                     (types::F32, Some(types::F64)) => builder.ins().fpromote(types::F64, l),
                     (t, Some(w)) if t.is_int() && (w == types::F64 || w == types::F32) => {
-                        builder.ins().fcvt_from_sint(w, l)
+                        let ty = super::imports::operand_static_type(lhs, func_mir);
+                        let unsigned = matches!(
+                            super::imports::concrete_ty(&ty),
+                            OliveType::U8
+                                | OliveType::U16
+                                | OliveType::U32
+                                | OliveType::U64
+                                | OliveType::Usize
+                        );
+                        if unsigned {
+                            builder.ins().fcvt_from_uint(w, l)
+                        } else {
+                            builder.ins().fcvt_from_sint(w, l)
+                        }
                     }
                     _ => l,
                 };
@@ -671,8 +722,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     let data_id = *string_ids
                         .get(&desc)
                         .expect("in-operator key descriptor not interned during collection");
-                    let local_data = module.declare_data_in_func(data_id, builder.func);
-                    let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                    let desc_ptr = super::setup::strings::literal_body(builder, module, data_id);
                     builder.ins().call(local_func, &[l, r, desc_ptr])
                 } else {
                     builder.ins().call(local_func, &[l, r])
@@ -879,7 +929,7 @@ impl<M: Module> CraneliftCodegen<M> {
         use crate::parser::UnaryOp::*;
         match op {
             Neg => {
-                let is_float = builder.func.dfg.value_type(o) == types::F64;
+                let is_float = matches!(builder.func.dfg.value_type(o), types::F32 | types::F64);
                 if is_float {
                     builder.ins().fneg(o)
                 } else if *operand_ty == OliveType::PyObject {

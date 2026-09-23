@@ -29,6 +29,43 @@ fn is_type_dispatched_builtin(name: &str) -> bool {
             | "abs"
             | "round"
             | "input"
+            | "__olive_json_stringify"
+            | "__olive_json_stringify_pretty"
+            | "__olive_yaml_stringify"
+            | "__olive_toml_stringify"
+            | "__olive_process_shell_argv"
+            | "__olive_process_spawn"
+            | "__olive_process_pid"
+            | "__olive_process_poll"
+            | "__olive_process_wait"
+            | "__olive_process_wait_timeout"
+            | "__olive_process_read_stdout"
+            | "__olive_process_read_stderr"
+            | "__olive_process_stdout_truncated"
+            | "__olive_process_stderr_truncated"
+            | "__olive_process_write_stdin"
+            | "__olive_process_close_stdin"
+            | "__olive_process_terminate"
+            | "__olive_process_kill"
+            | "__olive_process_exit_code"
+            | "__olive_process_signal_code"
+            | "__olive_process_close"
+            | "__olive_dlpack_export"
+            | "__olive_dlpack_import"
+            | "__olive_dlpack_data_ptr"
+            | "__olive_dlpack_byte_offset"
+            | "__olive_dlpack_ndim"
+            | "__olive_dlpack_shape_at"
+            | "__olive_dlpack_strides_at"
+            | "__olive_dlpack_dtype_code"
+            | "__olive_dlpack_bits"
+            | "__olive_dlpack_lanes"
+            | "__olive_dlpack_device_id"
+            | "__olive_dlpack_device_type"
+            | "__olive_dlpack_release"
+            | "__olive_relocate_any"
+            | "__olive_gather"
+            | "__olive_select"
     )
 }
 
@@ -420,6 +457,39 @@ impl<'a> MirBuilder<'a> {
             } else {
                 base_method_name
             };
+            let is_variadic_method = self
+                .fn_meta
+                .get(&method_name)
+                .is_some_and(|meta| meta.vararg_idx.is_some() || meta.kwarg_idx.is_some());
+            if is_variadic_method {
+                let mut all_arg_tys = vec![self.get_type(obj.id)];
+                all_arg_tys.extend(arg_tys.iter().cloned());
+                let mut all_kw_names = vec![None];
+                all_kw_names.extend(arg_kw_names.iter().cloned());
+                let param_tys = match self.get_type(callee.id) {
+                    Type::Fn(params, _, _) => params,
+                    _ => Vec::new(),
+                };
+                let packed_args = self.pack_fn_call_args(
+                    &method_name,
+                    &method_args,
+                    &all_arg_tys,
+                    &param_tys,
+                    &all_kw_names,
+                    span,
+                );
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(method_name)),
+                            args: packed_args,
+                        },
+                    ),
+                    span,
+                );
+                return self.operand_for_local(tmp);
+            }
             self.fill_trailing_defaults(&method_name, &mut method_args, callee.id, span);
             self.push_statement(
                 StatementKind::Assign(

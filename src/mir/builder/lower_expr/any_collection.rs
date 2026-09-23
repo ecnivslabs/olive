@@ -5,6 +5,20 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    pub(crate) fn is_future_type(ty: &Type) -> bool {
+        matches!(ty, Type::Future(_))
+            || matches!(ty, Type::Struct(name, _, false) if name == "Future")
+    }
+
+    pub(crate) fn contains_future_type(ty: &Type) -> bool {
+        match ty {
+            Type::List(e) | Type::Set(e) => Self::contains_future_type(e),
+            Type::Dict(k, v) => Self::contains_future_type(k) || Self::contains_future_type(v),
+            Type::Tuple(items) => items.iter().any(Self::contains_future_type),
+            _ => Self::is_future_type(ty),
+        }
+    }
+
     /// Whether a value of this type can sit raw in an `Any` slot. Only
     /// slab-kind-tagged words are self-describing there; a raw struct
     /// pointer misreads by kind (its header word is a field count, not a
@@ -12,6 +26,7 @@ impl<'a> MirBuilder<'a> {
     /// carry a real kind header plus their own descriptor, so they stay.
     pub(crate) fn any_needs_erase(ty: &Type) -> bool {
         match ty {
+            Type::Struct(..) if Self::is_future_type(ty) => false,
             Type::Struct(..) => true,
             Type::List(e) | Type::Set(e) => Self::any_needs_erase(e),
             Type::Dict(k, v) => Self::any_needs_erase(k) || Self::any_needs_erase(v),

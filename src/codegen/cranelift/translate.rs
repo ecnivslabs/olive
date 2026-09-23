@@ -1,8 +1,9 @@
 use super::CraneliftCodegen;
-use super::imports::cl_type;
-use super::translate_rvalue::{emit_bounds_check, emit_nil_check, loc_value};
+use super::imports::{cl_type, is_unsigned_op};
+use super::translate_rvalue::{STR_LITERAL_TAG, emit_bounds_check, emit_nil_check, loc_value};
 use crate::mir::{
-    Constant, Local, MirFunction, Operand, Statement, StatementKind, Terminator, TerminatorKind,
+    Constant, Local, MirFunction, Operand, Rvalue, Statement, StatementKind, Terminator,
+    TerminatorKind,
 };
 use crate::semantic::types::Type as OliveType;
 use crate::span::Span;
@@ -139,8 +140,7 @@ pub(super) fn emit_value_free(
         let data_id = *string_ids
             .get(&desc)
             .expect("drop descriptor not interned during collection");
-        let local_data = module.declare_data_in_func(data_id, builder.func);
-        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+        let desc_ptr = super::setup::strings::literal_body(builder, module, data_id);
         let free_id = func_ids
             .get("__olive_free_typed")
             .expect("missing __olive_free_typed");
@@ -228,7 +228,10 @@ pub(super) fn attr_symbol(
 ) -> Value {
     if let Some(&id) = string_ids.get(attr) {
         let local_id = module.declare_data_in_func(id, builder.func);
-        builder.ins().symbol_value(types::I64, local_id)
+        let ptr = builder.ins().symbol_value(types::I64, local_id);
+        builder
+            .ins()
+            .iadd_imm(ptr, super::setup::strings::STR_LITERAL_HEADER_BYTES)
     } else {
         let c_str = std::ffi::CString::new(attr).unwrap();
         builder.ins().iconst(types::I64, c_str.into_raw() as i64)
@@ -361,9 +364,11 @@ impl<M: Module> CraneliftCodegen<M> {
                                     .string_ids
                                     .get(&desc)
                                     .expect("drop descriptor not interned");
-                                let local_data =
-                                    self.module.declare_data_in_func(data_id, builder.func);
-                                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                                let desc_ptr = super::setup::strings::literal_body(
+                                    &mut builder,
+                                    &mut self.module,
+                                    data_id,
+                                );
                                 let clear_id = self.func_ids["__olive_clear_typed"];
                                 let local_func =
                                     self.module.declare_func_in_func(clear_id, builder.func);
@@ -631,7 +636,25 @@ impl<M: Module> CraneliftCodegen<M> {
                             builder.ins().ireduce(decl_ty, val)
                         }
                     } else if val_ty.is_int() && decl_ty.is_float() {
-                        builder.ins().fcvt_from_sint(decl_ty, val)
+                        let source_is_unsigned = match rval {
+                            Rvalue::Use(op) | Rvalue::Cast(op, _) => {
+                                let ty = super::imports::operand_static_type(op, func_mir);
+                                matches!(
+                                    super::imports::concrete_ty(&ty),
+                                    crate::semantic::types::Type::U8
+                                        | crate::semantic::types::Type::U16
+                                        | crate::semantic::types::Type::U32
+                                        | crate::semantic::types::Type::U64
+                                        | crate::semantic::types::Type::Usize
+                                )
+                            }
+                            _ => false,
+                        };
+                        if source_is_unsigned {
+                            builder.ins().fcvt_from_uint(decl_ty, val)
+                        } else {
+                            builder.ins().fcvt_from_sint(decl_ty, val)
+                        }
                     } else if val_ty.is_float() && decl_ty.is_int() {
                         builder.ins().fcvt_to_sint(decl_ty, val)
                     } else {
@@ -682,7 +705,11 @@ impl<M: Module> CraneliftCodegen<M> {
                         if let Some((bit_off, bit_count)) = bits {
                             let word_ty = super::ffi_cl_type(ty_name);
                             let word = builder.ins().load(word_ty, MemFlags::trusted(), o, offset);
-                            let mask = (1i64 << bit_count) - 1;
+                            let mask = if bit_count == 64 {
+                                i64::MAX
+                            } else {
+                                (1i64 << bit_count) - 1
+                            };
                             let positioned_mask = mask << bit_off;
                             let word_i64 = if word_ty == types::I64 {
                                 word
@@ -851,7 +878,21 @@ impl<M: Module> CraneliftCodegen<M> {
                 let ty = super::imports::concrete_ty(ty);
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
-                let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
+                let i_raw =
+                    Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
+                let i = if super::translate_rvalue::integer_cl_type(
+                    &super::imports::operand_static_type(idx, func_mir),
+                )
+                .is_some()
+                {
+                    super::translate_rvalue::widen_integer_value(
+                        builder,
+                        i_raw,
+                        is_unsigned_op(func_mir, idx),
+                    )
+                } else {
+                    i_raw
+                };
                 let v =
                     Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
 
@@ -891,8 +932,8 @@ impl<M: Module> CraneliftCodegen<M> {
                         let data_id = *string_ids
                             .get(&desc)
                             .expect("dict key descriptor not interned during collection");
-                        let local_data = module.declare_data_in_func(data_id, builder.func);
-                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        let desc_ptr =
+                            super::setup::strings::literal_body(builder, module, data_id);
                         if val_ty.needs_drop() {
                             let val_desc = super::imports::type_descriptor(
                                 val_ty,
@@ -903,10 +944,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             let val_data_id = *string_ids
                                 .get(&val_desc)
                                 .expect("dict value descriptor not interned during collection");
-                            let val_local_data =
-                                module.declare_data_in_func(val_data_id, builder.func);
                             let val_desc_ptr =
-                                builder.ins().symbol_value(types::I64, val_local_data);
+                                super::setup::strings::literal_body(builder, module, val_data_id);
                             let set_id = func_ids
                                 .get("__olive_obj_set_replacing_typed")
                                 .expect("missing __olive_obj_set_replacing_typed");
@@ -932,8 +971,8 @@ impl<M: Module> CraneliftCodegen<M> {
                         let val_data_id = *string_ids
                             .get(&val_desc)
                             .expect("dict value descriptor not interned during collection");
-                        let val_local_data = module.declare_data_in_func(val_data_id, builder.func);
-                        let val_desc_ptr = builder.ins().symbol_value(types::I64, val_local_data);
+                        let val_desc_ptr =
+                            super::setup::strings::literal_body(builder, module, val_data_id);
                         // `Any`-keyed dicts stay untyped: normalized keys hash
                         // identically under the heuristic at store, lookup,
                         // and growth rehash. A per-key descriptor would
@@ -953,8 +992,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             let data_id = *string_ids.get(&desc).expect(
                                 "any-keyed replacing-setindex descriptor not interned during collection",
                             );
-                            let local_data = module.declare_data_in_func(data_id, builder.func);
-                            builder.ins().symbol_value(types::I64, local_data)
+                            super::setup::strings::literal_body(builder, module, data_id)
                         } else {
                             builder.ins().iconst(types::I64, 0)
                         };
@@ -976,8 +1014,8 @@ impl<M: Module> CraneliftCodegen<M> {
                         let data_id = *string_ids
                             .get(&desc)
                             .expect("list element descriptor not interned during collection");
-                        let local_data = module.declare_data_in_func(data_id, builder.func);
-                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        let desc_ptr =
+                            super::setup::strings::literal_body(builder, module, data_id);
                         emit_nil_check(builder, module, func_ids, o, loc);
                         let len = builder.ins().load(
                             types::I64,
@@ -986,7 +1024,15 @@ impl<M: Module> CraneliftCodegen<M> {
                             24,
                         );
                         let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                            emit_bounds_check(
+                                builder,
+                                module,
+                                func_ids,
+                                i_raw,
+                                len,
+                                loc,
+                                is_unsigned_op(func_mir, idx),
+                            )
                         } else {
                             i
                         };
@@ -1006,8 +1052,8 @@ impl<M: Module> CraneliftCodegen<M> {
                         let data_id = *string_ids
                             .get(&desc)
                             .expect("tuple descriptor not interned during collection");
-                        let local_data = module.declare_data_in_func(data_id, builder.func);
-                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        let desc_ptr =
+                            super::setup::strings::literal_body(builder, module, data_id);
                         emit_nil_check(builder, module, func_ids, o, loc);
                         let len = builder.ins().load(
                             types::I64,
@@ -1016,7 +1062,15 @@ impl<M: Module> CraneliftCodegen<M> {
                             24,
                         );
                         let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                            emit_bounds_check(
+                                builder,
+                                module,
+                                func_ids,
+                                i_raw,
+                                len,
+                                loc,
+                                is_unsigned_op(func_mir, idx),
+                            )
                         } else {
                             i
                         };
@@ -1043,8 +1097,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             let data_id = *string_ids.get(&desc).expect(
                                 "any-keyed dict setindex descriptor not interned during collection",
                             );
-                            let local_data = module.declare_data_in_func(data_id, builder.func);
-                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let desc_ptr =
+                                super::setup::strings::literal_body(builder, module, data_id);
                             let set_id = func_ids
                                 .get("__olive_obj_set_typed")
                                 .expect("missing __olive_obj_set_typed");
@@ -1109,8 +1163,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             let data_id = *string_ids
                                 .get(&desc)
                                 .expect("any-setindex descriptor not interned during collection");
-                            let local_data = module.declare_data_in_func(data_id, builder.func);
-                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let desc_ptr =
+                                super::setup::strings::literal_body(builder, module, data_id);
                             let set_id = func_ids
                                 .get("__olive_set_index_any_typed")
                                 .expect("missing __olive_set_index_any_typed");
@@ -1141,8 +1195,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             let data_id = *string_ids
                                 .get(&desc)
                                 .expect("enum descriptor not interned during collection");
-                            let local_data = module.declare_data_in_func(data_id, builder.func);
-                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let desc_ptr =
+                                super::setup::strings::literal_body(builder, module, data_id);
                             let set_id = func_ids
                                 .get("__olive_enum_set_typed")
                                 .expect("missing __olive_enum_set_typed");
@@ -1165,7 +1219,15 @@ impl<M: Module> CraneliftCodegen<M> {
                             16,
                         );
                         let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                            emit_bounds_check(
+                                builder,
+                                module,
+                                func_ids,
+                                i_raw,
+                                len,
+                                loc,
+                                is_unsigned_op(func_mir, idx),
+                            )
                         } else {
                             i
                         };
@@ -1188,7 +1250,15 @@ impl<M: Module> CraneliftCodegen<M> {
                             24,
                         );
                         let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                            emit_bounds_check(
+                                builder,
+                                module,
+                                func_ids,
+                                i_raw,
+                                len,
+                                loc,
+                                is_unsigned_op(func_mir, idx),
+                            )
                         } else {
                             i
                         };
@@ -1289,7 +1359,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     .map(|id| {
                         let local = module.declare_data_in_func(*id, builder.func);
                         let ptr = builder.ins().symbol_value(types::I64, local);
-                        builder.ins().bor_imm(ptr, 1)
+                        let body = builder
+                            .ins()
+                            .iadd_imm(ptr, super::setup::strings::STR_LITERAL_HEADER_BYTES);
+                        builder.ins().bor_imm(body, STR_LITERAL_TAG)
                     })
                     .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
                 let loc = loc_value(builder, module, loc_id);
@@ -1353,7 +1426,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     });
                     let local_id = module.declare_data_in_func(id, builder.func);
                     let ptr = builder.ins().symbol_value(types::I64, local_id);
-                    builder.ins().bor_imm(ptr, 1)
+                    let body = builder
+                        .ins()
+                        .iadd_imm(ptr, super::setup::strings::STR_LITERAL_HEADER_BYTES);
+                    builder.ins().bor_imm(body, STR_LITERAL_TAG)
                 }
                 Constant::Function(name) => {
                     if let Some(&func_id) = func_ids.get(name) {

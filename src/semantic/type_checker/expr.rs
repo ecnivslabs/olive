@@ -1386,17 +1386,41 @@ impl TypeChecker {
                     return self.apply_subst(Type::Struct(name, type_args, is_ffi));
                 }
 
-                let is_vararg = match &callee.kind {
-                    ExprKind::Identifier(name) => self.vararg_fns.contains(name.as_str()),
-                    ExprKind::Attr { obj, attr } => {
-                        if let ExprKind::Identifier(alias) = &obj.kind {
-                            let mangled = format!("{}::{}", alias, attr);
-                            self.vararg_fns.contains(mangled.as_str())
-                        } else {
-                            false
+                let (registered_name, is_method) = self.resolve_call_target(callee);
+                let is_vararg = registered_name
+                    .as_deref()
+                    .is_some_and(|name| self.vararg_fns.contains(name))
+                    || match &callee.kind {
+                        ExprKind::Identifier(name) => self.vararg_fns.contains(name.as_str()),
+                        ExprKind::Attr { obj, attr } => {
+                            if let ExprKind::Identifier(alias) = &obj.kind {
+                                let mangled = format!("{}::{}", alias, attr);
+                                self.vararg_fns.contains(mangled.as_str())
+                            } else {
+                                false
+                            }
                         }
-                    }
-                    _ => false,
+                        _ => false,
+                    };
+                let is_c_variadic = is_vararg
+                    && match &callee.kind {
+                        ExprKind::Identifier(name) => self.c_ffi_fns.contains(name.as_str()),
+                        ExprKind::Attr { obj, attr } => {
+                            if let ExprKind::Identifier(alias) = &obj.kind {
+                                self.c_ffi_fns
+                                    .contains(format!("{}::{}", alias, attr).as_str())
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+                let normal_vararg_layout = if is_vararg && !is_c_variadic {
+                    registered_name
+                        .as_deref()
+                        .and_then(|name| self.vararg_layouts.get(name).copied())
+                } else {
+                    None
                 };
 
                 // For a plain function call whose positional arguments line up
@@ -1411,7 +1435,11 @@ impl TypeChecker {
                                 && params.len() == args.len()))
                             && args.iter().all(|a| matches!(a, CallArg::Positional(_))) =>
                     {
-                        params.clone()
+                        if let Some((fixed, _, _)) = normal_vararg_layout {
+                            params.iter().take(fixed).cloned().collect()
+                        } else {
+                            params.clone()
+                        }
                     }
                     _ => Vec::new(),
                 };
@@ -1468,8 +1496,6 @@ impl TypeChecker {
 
                 // Struct methods drop their receiver so params line up with args;
                 // a function-typed field is not a method and keeps all of them.
-                let (registered_name, is_method) = self.resolve_call_target(callee);
-
                 if is_method
                     && let Type::Fn(params, ret, args) = &resolved_callee
                     && !params.is_empty()
@@ -1493,7 +1519,65 @@ impl TypeChecker {
                     );
                 }
 
-                if is_vararg {
+                if is_vararg && !is_c_variadic && normal_vararg_layout.is_none() {
+                    let ret_ty = self.fresh_var();
+                    if let Type::Fn(_, fn_ret, _) = self.apply_subst(final_callee_ty) {
+                        self.unify(&ret_ty, &fn_ret, expr.span);
+                    }
+                    self.apply_subst(ret_ty)
+                } else if let Some((fixed, has_vararg, has_kwargs)) = normal_vararg_layout {
+                    let ret_ty = self.fresh_var();
+                    if let Type::Fn(fixed_types, fn_ret, _) = self.apply_subst(final_callee_ty) {
+                        let mut positional = 0usize;
+                        for (arg_index, arg) in args.iter().enumerate() {
+                            match arg {
+                                CallArg::Positional(value) => {
+                                    if positional < fixed {
+                                        self.unify(
+                                            &fixed_types[positional],
+                                            &arg_types[arg_index],
+                                            value.span,
+                                        );
+                                    } else if !has_vararg {
+                                        self.errors.push(super::super::error::SemanticError::rich(
+                                            crate::compile::errors::Diagnostic::error(
+                                                "E0400",
+                                                "too many positional arguments",
+                                                value.span,
+                                            ),
+                                        ));
+                                    }
+                                    positional += 1;
+                                }
+                                CallArg::Keyword(_, value) => {
+                                    if has_kwargs
+                                        && let Some(index) = fixed_types
+                                            .iter()
+                                            .position(|ty| matches!(ty, Type::Dict(_, _)))
+                                        && let Type::Dict(_, value_ty) = &fixed_types[index]
+                                    {
+                                        self.unify(value_ty, &arg_types[arg_index], value.span);
+                                    } else {
+                                        self.errors.push(super::super::error::SemanticError::rich(
+                                            crate::compile::errors::Diagnostic::error(
+                                                "E0404",
+                                                "function does not accept keyword arguments",
+                                                value.span,
+                                            ),
+                                        ));
+                                    }
+                                }
+                                CallArg::Splat(_) | CallArg::KwSplat(_) => {}
+                            }
+                        }
+                        self.unify(&ret_ty, &fn_ret, expr.span);
+                    }
+                    self.apply_subst(ret_ty)
+                } else if is_c_variadic {
+                    let positional_count = args
+                        .iter()
+                        .filter(|arg| matches!(arg, CallArg::Positional(_)))
+                        .count();
                     if args
                         .iter()
                         .any(|arg| !matches!(arg, CallArg::Positional(_)))
@@ -1510,14 +1594,14 @@ impl TypeChecker {
                     }
                     let ret_ty = self.fresh_var();
                     if let Type::Fn(fixed, fn_ret, _) = self.apply_subst(final_callee_ty) {
-                        if args.len() < fixed.len() {
+                        if positional_count < fixed.len() {
                             self.errors.push(super::super::error::SemanticError::rich(
                                 crate::compile::errors::Diagnostic::error(
                                     "E0400",
                                     format!(
                                         "variadic call expects at least {} arguments, got {}",
                                         fixed.len(),
-                                        args.len()
+                                        positional_count
                                     ),
                                     expr.span,
                                 )

@@ -28,33 +28,18 @@ fn main():
         libc.puts("written through libc")
 ```
 
-## Structs and Unions
+## Structs
 
-Declare the layout of native structs and unions inside the import block so it matches the C memory layout. A union is written as `union struct`:
+Declare C-compatible scalar and raw-pointer fields inside the import block. Verified aggregate lowering currently accepts structs up to 16 bytes. It rejects unions, bitfields, fixed-array fields, aggregate `str` fields, qualified nested types, and larger aggregates instead of generating an unverifiable ABI.
 
 ```olive
 import "libfoo.so" as foo:
     struct Settings:
-        name: str
         is_bare: int
-
-    union struct Value:
-        b: bool
-        i: int
-        f: float
+        flags: u32
 ```
 
-### Bitfields
-
-Inside an import block, give a struct field an explicit bit width with `@`:
-
-```olive
-import "libfoo.so" as foo:
-    struct Flags:
-        is_ready: int @ 1
-        error_code: int @ 3
-        reserved: int @ 4
-```
+These rejected shapes remain diagnostics, not silent layout guesses. A future release may enable them after platform-specific lowering and tests prove the ABI.
 
 ## Calling Conventions
 

@@ -597,6 +597,7 @@ enum AnyDest {
     Set(i64),
     ObjField(i64, i64),
     EnumSlot(i64, i64),
+    ResultPayload(i64),
 }
 
 /// Kind-driven deep copy of a statically-`Any` word, the mirror of the
@@ -620,6 +621,9 @@ pub(crate) fn copy_any(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
                     .insert(OliveStringKey(key), copied);
             },
             AnyDest::EnumSlot(en, i) => crate::olive_enum_set(en, i, copied),
+            AnyDest::ResultPayload(result) => unsafe {
+                (*(result as *mut crate::result::OliveResult)).payload = copied;
+            },
         }
     }
     root
@@ -641,6 +645,11 @@ fn copy_any_key(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
 /// Copies val into GLOBAL_SLABS before it crosses; copy semantics, original untouched.
 pub(crate) fn relocate_across_boundary(val: i64) -> i64 {
     crate::slab::with_escape_arena(|| copy_any(val, &mut FxHashMap::default()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_relocate_any(val: i64) -> i64 {
+    relocate_across_boundary(val)
 }
 
 /// Copies one `D_ANY` node. Leaves resolve immediately; a container
@@ -715,6 +724,17 @@ fn copy_any_node(
             }
             new
         }
+        crate::result::KIND_RESULT if crate::is_kind(val, kind) => {
+            let result = unsafe { &*(val as *const crate::result::OliveResult) };
+            let new = if result.tag == 1 {
+                crate::result::olive_result_ok(0)
+            } else {
+                crate::result::olive_result_err(0)
+            };
+            visited.insert(val, new);
+            stack.push((result.payload, AnyDest::ResultPayload(new)));
+            new
+        }
         KIND_FLOAT if crate::is_kind(val, kind) => {
             let bits = unsafe { (*(val as *const crate::boxed::OliveBoxed)).bits };
             crate::boxed::olive_box_float(f64::from_bits(bits as u64))
@@ -746,6 +766,35 @@ fn copy_any_node(
             crate::struct_box::set_inner(new, copied);
             new
         }
+        crate::struct_obj::KIND_FATPTR if crate::is_kind(val, kind) => {
+            let (data, vtable, drop_shim, desc_word) = crate::struct_obj::fatptr_fields(val);
+            let desc = crate::struct_obj::fatptr_desc(val);
+            if desc == 0 {
+                return 0;
+            }
+            let new = crate::struct_obj::fatptr_new(0, vtable, drop_shim, desc_word);
+            visited.insert(val, new);
+            let mut pos = 0usize;
+            let copied = copy_val(data, desc as *const u8, &mut pos, visited);
+            crate::struct_obj::fatptr_set_data(new, copied);
+            new
+        }
+        crate::KIND_ITER if crate::is_kind(val, kind) => {
+            let iterator = unsafe { &*(val as *const crate::list::OliveIter) };
+            if iterator.is_py || iterator.snapshot_desc != 0 {
+                return 0;
+            }
+            let list = copy_any(iterator.list_ptr, visited);
+            let new = crate::list::olive_iter(list);
+            let copied = unsafe { &mut *(new as *mut crate::list::OliveIter) };
+            copied.index = iterator.index;
+            copied.derived = true;
+            if iterator.has_peeked {
+                copied.has_peeked = true;
+                copied.py_peeked = copy_any(iterator.py_peeked, visited);
+            }
+            new
+        }
         _ => val,
     }
 }
@@ -768,6 +817,17 @@ mod tests {
 
     fn read(ptr: i64) -> String {
         crate::olive_str_from_ptr(ptr)
+    }
+
+    #[test]
+    fn result_copy_survives_source_free() {
+        let source = crate::result::olive_result_ok(s("payload"));
+        let copied = relocate_across_boundary(source);
+        crate::olive_free_any(source);
+        let result = unsafe { &*(copied as *const crate::result::OliveResult) };
+        assert_eq!(result.tag, 1);
+        assert_eq!(read(result.payload), "payload");
+        crate::olive_free_any(copied);
     }
 
     #[test]

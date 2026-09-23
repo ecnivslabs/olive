@@ -148,11 +148,24 @@ pub fn compile_instrumented(src: &str) -> (JitInstance, crate::mir::debug_hooks:
     (JitInstance(Some(cg)), program)
 }
 
-fn compile_with(
+fn compile_with(src: &str, opt: Optimizer, profile: bool, release_backend: bool) -> JitInstance {
+    compile_with_extra_passes(src, opt, profile, release_backend, Vec::new())
+}
+
+#[allow(dead_code)]
+pub fn compile_with_pass(
+    src: &str,
+    pass: Box<dyn crate::mir::optimizations::Transform>,
+) -> JitInstance {
+    compile_with_extra_passes(src, Optimizer::new(), true, false, vec![pass])
+}
+
+fn compile_with_extra_passes(
     src: &str,
     mut opt: Optimizer,
     profile: bool,
     release_backend: bool,
+    extra_passes: Vec<Box<dyn crate::mir::optimizations::Transform>>,
 ) -> JitInstance {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
     let mut prog = Parser::new(tokens).parse_program().unwrap();
@@ -178,6 +191,11 @@ fn compile_with(
     builder.monomorphize_drop_fns();
     opt.set_vtables(builder.vtables.clone());
     let (_diags, _copy_sites) = opt.run(&mut builder.functions);
+    for pass in &extra_passes {
+        for function in &mut builder.functions {
+            pass.run(function);
+        }
+    }
     let mut cg = CraneliftCodegen::new_jit(
         builder.functions,
         builder.struct_fields,
