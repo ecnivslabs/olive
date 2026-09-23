@@ -138,6 +138,41 @@ fn main():
 
 #[cfg(target_os = "linux")]
 #[test]
+fn c_aggregate_rejects_qualified_nested_fields() {
+    assert_compile_fails(
+        r#"import "/usr/lib/libc.so.6" as c:
+    struct Inner:
+        x: int
+    struct Outer:
+        inner: c.Inner
+        y: int
+    fn outer_sum(o: Outer) -> int
+
+fn main():
+    print("unreached")
+"#,
+        "has an unsupported type",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn c_aggregate_rejects_fixed_array_fields() {
+    assert_compile_fails(
+        r#"import "/usr/lib/libc.so.6" as c:
+    struct Arr:
+        xs: [int; 3]
+    fn arr_sum(a: Arr) -> int
+
+fn main():
+    print("unreached")
+"#,
+        "has an unsupported type",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn c_void_return_is_accepted() {
     assert_both(
         r#"import "/usr/lib/libc.so.6" as c:

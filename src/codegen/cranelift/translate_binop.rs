@@ -207,7 +207,10 @@ impl<M: Module> CraneliftCodegen<M> {
                         .get(profiled_name)
                         .unwrap_or_else(|| panic!("missing {profiled_name}"));
                     let local_func = module.declare_func_in_func(*fid, builder.func);
-                    let site_ptr = super::setup::strings::literal_body(builder, module, site_id);
+                    // Site cells are raw zero-init bytes, not string
+                    // literals: no header offset applies here.
+                    let site_local = module.declare_data_in_func(site_id, builder.func);
+                    let site_ptr = builder.ins().symbol_value(types::I64, site_local);
 
                     if specialize_sites.contains(&site_index) {
                         return Self::translate_any_binop_specialized(
