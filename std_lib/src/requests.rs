@@ -38,6 +38,10 @@ fn set_last_error(msg: String) {
     LAST_ERROR.with(|e| *e.borrow_mut() = msg);
 }
 
+fn clear_last_error() {
+    LAST_ERROR.with(|e| e.borrow_mut().clear());
+}
+
 fn describe_error(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, resp) => {
@@ -45,23 +49,6 @@ fn describe_error(e: &ureq::Error) -> String {
             format!("http {} {}", code, body)
         }
         ureq::Error::Transport(t) => t.to_string(),
-    }
-}
-
-const MAX_RETRIES: u32 = 3;
-const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
-const RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
-
-fn is_retryable_status(code: u16) -> bool {
-    matches!(code, 429 | 500 | 502 | 503 | 504)
-}
-
-fn retry_delay(attempt: u32) -> Duration {
-    let scaled = RETRY_BASE_DELAY.saturating_mul(1 << attempt);
-    if scaled > RETRY_MAX_DELAY {
-        RETRY_MAX_DELAY
-    } else {
-        scaled
     }
 }
 
@@ -100,34 +87,24 @@ fn spawn_post_json_async(url: String, body: String, headers: Vec<(String, String
         .insert(handle, AsyncOutcome::Pending);
 
     thread::spawn(move || {
-        let mut attempt = 0;
-        let outcome = loop {
-            let mut req = ureq::post(&url)
-                .timeout(REQUEST_TIMEOUT)
-                .set("Content-Type", "application/json");
-            for (k, v) in &headers {
-                req = req.set(k, v);
+        // Single attempt: POST is not idempotent, so automatic retries
+        // could replay a side effect the server already applied.
+        let mut req = ureq::post(&url)
+            .timeout(REQUEST_TIMEOUT)
+            .set("Content-Type", "application/json");
+        for (k, v) in &headers {
+            req = req.set(k, v);
+        }
+        let outcome = match req.send_bytes(body.as_bytes()) {
+            Ok(resp) => match resp.into_string() {
+                Ok(s) => AsyncOutcome::Ok(s),
+                Err(e) => AsyncOutcome::Err(e.to_string()),
+            },
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.status_text().to_string();
+                AsyncOutcome::Err(format!("http {} {}", code, body))
             }
-            let result = req.send_bytes(body.as_bytes());
-
-            match result {
-                Ok(resp) => match resp.into_string() {
-                    Ok(s) => break AsyncOutcome::Ok(s),
-                    Err(e) => break AsyncOutcome::Err(e.to_string()),
-                },
-                Err(ureq::Error::Status(code, resp)) => {
-                    if is_retryable_status(code) && attempt + 1 < MAX_RETRIES {
-                        thread::sleep(retry_delay(attempt));
-                        attempt += 1;
-                        continue;
-                    }
-                    let body = resp.status_text().to_string();
-                    break AsyncOutcome::Err(format!("http {} {}", code, body));
-                }
-                Err(e @ ureq::Error::Transport(_)) => {
-                    break AsyncOutcome::Err(describe_error(&e));
-                }
-            }
+            Err(e @ ureq::Error::Transport(_)) => AsyncOutcome::Err(describe_error(&e)),
         };
 
         if let Ok(mut table) = async_table().lock() {
@@ -194,11 +171,17 @@ pub extern "C" fn olive_http_poll(handle: i64) -> i64 {
     }
 }
 
+/// Consumes only the matching terminal outcome. A mismatched accessor
+/// leaves the entry in place so the other outcome stays readable; a
+/// pending entry is never destroyed by a take.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_take_result(handle: i64) -> i64 {
     let mut table = async_table().lock().unwrap();
-    match table.remove(&handle) {
-        Some(AsyncOutcome::Ok(s)) => olive_str_internal(&s),
+    match table.get(&handle) {
+        Some(AsyncOutcome::Ok(_)) => match table.remove(&handle) {
+            Some(AsyncOutcome::Ok(s)) => olive_str_internal(&s),
+            _ => 0,
+        },
         _ => 0,
     }
 }
@@ -206,8 +189,11 @@ pub extern "C" fn olive_http_take_result(handle: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_take_error(handle: i64) -> i64 {
     let mut table = async_table().lock().unwrap();
-    match table.remove(&handle) {
-        Some(AsyncOutcome::Err(s)) => olive_str_internal(&s),
+    match table.get(&handle) {
+        Some(AsyncOutcome::Err(_)) => match table.remove(&handle) {
+            Some(AsyncOutcome::Err(s)) => olive_str_internal(&s),
+            _ => 0,
+        },
         _ => 0,
     }
 }
@@ -245,6 +231,7 @@ pub extern "C" fn olive_http_str_is_null(value: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_get(url_ptr: i64) -> i64 {
+    clear_last_error();
     if url_ptr == 0 {
         return 0;
     }
@@ -266,6 +253,7 @@ pub extern "C" fn olive_http_get(url_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_post(url_ptr: i64, body_ptr: i64) -> i64 {
+    clear_last_error();
     if url_ptr == 0 {
         return 0;
     }
@@ -295,6 +283,7 @@ pub extern "C" fn olive_http_post(url_ptr: i64, body_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_post_json(url_ptr: i64, body_ptr: i64) -> i64 {
+    clear_last_error();
     if url_ptr == 0 {
         return 0;
     }
@@ -325,6 +314,7 @@ pub extern "C" fn olive_http_post_json(url_ptr: i64, body_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_put(url_ptr: i64, body_ptr: i64) -> i64 {
+    clear_last_error();
     if url_ptr == 0 {
         return 0;
     }
@@ -354,6 +344,7 @@ pub extern "C" fn olive_http_put(url_ptr: i64, body_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_delete(url_ptr: i64) -> i64 {
+    clear_last_error();
     if url_ptr == 0 {
         return 0;
     }
@@ -366,6 +357,7 @@ pub extern "C" fn olive_http_delete(url_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_get_status(url_ptr: i64) -> i64 {
+    clear_last_error();
     if url_ptr == 0 {
         return 0;
     }
@@ -379,6 +371,7 @@ pub extern "C" fn olive_http_get_status(url_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_http_get_with_headers(url_ptr: i64, headers_ptr: i64) -> i64 {
+    clear_last_error();
     if url_ptr == 0 {
         return 0;
     }
@@ -408,6 +401,9 @@ struct StreamState {
     done: bool,
     error: Option<String>,
 }
+
+const MAX_STREAM_LINE_BYTES: usize = 1024 * 1024;
+const MAX_STREAM_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 fn stream_table() -> &'static Mutex<HashMap<i64, StreamState>> {
     static TABLE: OnceLock<Mutex<HashMap<i64, StreamState>>> = OnceLock::new();
@@ -450,11 +446,21 @@ fn spawn_post_json_stream(url: String, body: String, headers: Vec<(String, Strin
                     match reader.read_line(&mut line) {
                         Ok(0) => break,
                         Ok(_) => {
-                            if let Ok(mut table) = stream_table().lock()
-                                && let Some(state) = table.get_mut(&handle)
+                            let mut table = match stream_table().lock() {
+                                Ok(table) => table,
+                                Err(_) => break,
+                            };
+                            let Some(state) = table.get_mut(&handle) else {
+                                // Closed while reading: stop consuming.
+                                break;
+                            };
+                            if line.len() > MAX_STREAM_LINE_BYTES
+                                || state.chunk.len() + line.len() > MAX_STREAM_BUFFER_BYTES
                             {
-                                state.chunk.push_str(&line);
+                                read_err = Some("stream response exceeded size limits".to_string());
+                                break;
                             }
+                            state.chunk.push_str(&line);
                         }
                         Err(e) => {
                             read_err = Some(e.to_string());
@@ -585,5 +591,49 @@ mod tests {
     #[test]
     fn http_post_null_url() {
         assert_eq!(olive_http_post(0, 0), 0);
+    }
+
+    #[test]
+    fn mismatched_take_preserves_the_other_outcome() {
+        let ok_handle = next_handle();
+        async_table()
+            .lock()
+            .unwrap()
+            .insert(ok_handle, AsyncOutcome::Ok("body".to_string()));
+        assert_eq!(olive_http_take_error(ok_handle), 0);
+        assert_eq!(olive_http_poll(ok_handle), 1);
+        assert_ne!(olive_http_take_result(ok_handle), 0);
+        assert_eq!(olive_http_poll(ok_handle), -1);
+
+        let err_handle = next_handle();
+        async_table()
+            .lock()
+            .unwrap()
+            .insert(err_handle, AsyncOutcome::Err("boom".to_string()));
+        assert_eq!(olive_http_take_result(err_handle), 0);
+        assert_eq!(olive_http_poll(err_handle), 2);
+        assert_ne!(olive_http_take_error(err_handle), 0);
+        assert_eq!(olive_http_poll(err_handle), -1);
+    }
+
+    #[test]
+    fn take_never_destroys_a_pending_entry() {
+        let handle = next_handle();
+        async_table()
+            .lock()
+            .unwrap()
+            .insert(handle, AsyncOutcome::Pending);
+        assert_eq!(olive_http_take_result(handle), 0);
+        assert_eq!(olive_http_take_error(handle), 0);
+        assert_eq!(olive_http_poll(handle), 0);
+        async_table().lock().unwrap().remove(&handle);
+    }
+
+    #[test]
+    fn new_operation_clears_stale_error() {
+        set_last_error("stale".to_string());
+        olive_http_get(0);
+        let err = olive_http_last_error();
+        assert_eq!(crate::olive_str_from_ptr(err), "");
     }
 }
