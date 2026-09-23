@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
@@ -57,6 +58,87 @@ pub struct Pod {
 
 pub fn default_entry() -> String {
     "src/main.liv".to_string()
+}
+
+pub fn safe_relative_path(value: &str, field: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    if path.as_os_str().is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            return Err(format!(
+                "{field} '{value}' must be a relative path without '.' or '..' components"
+            ));
+        };
+        if !crate::tooling::safe_archive_component(name) {
+            return Err(format!(
+                "{field} '{value}' contains an unsafe path component"
+            ));
+        }
+        relative.push(name);
+    }
+    Ok(relative)
+}
+
+pub fn resolve_existing_within(root: &Path, value: &str, field: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve {}: {error}", root.display()))?;
+    let relative = safe_relative_path(value, field)?;
+    let resolved = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve {field} '{value}': {error}"))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!(
+            "{field} '{value}' escapes project root {}",
+            root.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+pub fn resolve_file_within(root: &Path, value: &str, field: &str) -> Result<PathBuf, String> {
+    let resolved = resolve_existing_within(root, value, field)?;
+    if !resolved.is_file() {
+        return Err(format!("{field} '{value}' must name a regular file"));
+    }
+    Ok(resolved)
+}
+
+pub fn validate_native_layout(native: &Native) -> Result<(), String> {
+    let lib = safe_relative_path(&native.lib, "native library name")?;
+    if lib
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty())
+    {
+        return Err("native library name must be a bare filename stem".to_string());
+    }
+    safe_relative_path(native.artifact_dir(), "native artifact directory")?;
+    if native
+        .build
+        .as_ref()
+        .is_some_and(|argv| argv.first().is_none_or(|program| program.is_empty()))
+    {
+        return Err("native build command must name a program".to_string());
+    }
+    Ok(())
+}
+
+pub fn validate_pod_layout(config: &Config, root: &Path) -> Result<(), String> {
+    if let Some(pod) = &config.pod {
+        crate::tooling::registry::validate_pod_name(&pod.name)?;
+        resolve_file_within(root, &pod.entry, "pod entry")?;
+        for include in &pod.include {
+            resolve_existing_within(root, include, "pod include")?;
+        }
+    }
+    if let Some(native) = &config.native {
+        validate_native_layout(native)?;
+    }
+    Ok(())
 }
 
 /// A pod's native (non-Olive) shared library, built out of band from the
@@ -209,5 +291,35 @@ foo = "1.0"
         let cfg: Config = toml::from_str(s).unwrap();
         assert!(cfg.native.is_none());
         assert!(cfg.pod.unwrap().include.is_empty());
+    }
+
+    #[test]
+    fn safe_relative_paths_reject_escape_and_special_components() {
+        for path in ["", "/tmp/lib.liv", "../lib.liv", "src/../../lib.liv", "CON"] {
+            assert!(
+                safe_relative_path(path, "pod entry").is_err(),
+                "accepted unsafe path {path:?}"
+            );
+        }
+        assert_eq!(
+            safe_relative_path("src/lib.liv", "pod entry").unwrap(),
+            PathBuf::from("src").join("lib.liv")
+        );
+    }
+
+    #[test]
+    fn native_layout_rejects_escaping_names_and_directories() {
+        let native = Native {
+            lib: "../outside".into(),
+            ..Native::default()
+        };
+        assert!(validate_native_layout(&native).is_err());
+
+        let native = Native {
+            lib: "tokenizer".into(),
+            dir: Some("../outside".into()),
+            ..Native::default()
+        };
+        assert!(validate_native_layout(&native).is_err());
     }
 }

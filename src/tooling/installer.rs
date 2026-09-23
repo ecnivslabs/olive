@@ -1,8 +1,9 @@
 use crate::tooling::manifest::Native;
 use crate::tooling::registry::{NativeSpec, PodVersion};
 use crate::tooling::target;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -101,6 +102,11 @@ impl From<std::io::Error> for InstallError {
     }
 }
 
+const MAX_POD_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DECOMPRESSED_POD_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_POD_ARCHIVE_ENTRIES: usize = 100_000;
+const INSTALL_CHECKSUM_MARKER: &str = ".pit-archive-checksum";
+
 /// Decompresses and extracts a `.pit.zst` archive into `dest_dir`.
 ///
 /// Pods are downloaded from URLs published in registry entries that reach the
@@ -111,14 +117,35 @@ impl From<std::io::Error> for InstallError {
 /// separately-verified native artifact download. All three are rejected here
 /// before any file is written.
 fn extract_pod_archive(compressed_data: &[u8], dest_dir: &Path) -> Result<(), InstallError> {
-    let decompressed =
-        zstd::decode_all(compressed_data).map_err(|e| InstallError::Extraction(e.to_string()))?;
+    fs::create_dir_all(dest_dir)?;
+    let destination_root = fs::canonicalize(dest_dir)?;
+    let decoder = zstd::stream::read::Decoder::new(compressed_data)
+        .map_err(|e| InstallError::Extraction(e.to_string()))?;
+    let mut limited = decoder.take(MAX_DECOMPRESSED_POD_BYTES + 1);
+    let mut decompressed = Vec::new();
+    limited
+        .read_to_end(&mut decompressed)
+        .map_err(|e| InstallError::Extraction(e.to_string()))?;
+    if decompressed.len() as u64 > MAX_DECOMPRESSED_POD_BYTES {
+        return Err(InstallError::Extraction(format!(
+            "pod archive exceeds the {MAX_DECOMPRESSED_POD_BYTES} byte decompressed limit"
+        )));
+    }
     let mut archive = tar::Archive::new(decompressed.as_slice());
+    let mut archive_root: Option<std::ffi::OsString> = None;
+    let mut seen = HashSet::new();
+    let mut entry_count = 0usize;
 
     for entry in archive
         .entries()
         .map_err(|e| InstallError::Extraction(e.to_string()))?
     {
+        entry_count += 1;
+        if entry_count > MAX_POD_ARCHIVE_ENTRIES {
+            return Err(InstallError::Extraction(format!(
+                "pod archive exceeds the {MAX_POD_ARCHIVE_ENTRIES} entry limit"
+            )));
+        }
         let mut entry = entry.map_err(|e| InstallError::Extraction(e.to_string()))?;
         let raw_path = entry
             .path()
@@ -134,22 +161,71 @@ fn extract_pod_archive(compressed_data: &[u8], dest_dir: &Path) -> Result<(), In
             )));
         }
 
-        let stripped: PathBuf = raw_path.components().skip(1).collect();
+        let mut components = raw_path.components();
+        let Some(std::path::Component::Normal(root)) = components.next() else {
+            return Err(InstallError::Extraction(format!(
+                "archive entry '{}' has no pod root",
+                raw_path.display()
+            )));
+        };
+        if !crate::tooling::safe_archive_component(root) {
+            return Err(InstallError::Extraction(format!(
+                "archive entry '{}' contains an unsafe root component",
+                raw_path.display()
+            )));
+        }
+        let root = root.to_os_string();
+        match &archive_root {
+            Some(expected) if expected != &root => {
+                return Err(InstallError::Extraction(format!(
+                    "archive contains multiple pod roots: '{}' and '{}'",
+                    expected.to_string_lossy(),
+                    root.to_string_lossy()
+                )));
+            }
+            None => archive_root = Some(root),
+            _ => {}
+        }
+        if !seen.insert(raw_path.clone()) {
+            return Err(InstallError::Extraction(format!(
+                "archive contains duplicate entry '{}'",
+                raw_path.display()
+            )));
+        }
+
+        let stripped: PathBuf = components.collect();
         if stripped.as_os_str().is_empty() {
+            if !kind.is_dir() {
+                return Err(InstallError::Extraction(format!(
+                    "archive root '{}' is not a directory",
+                    raw_path.display()
+                )));
+            }
             continue;
         }
         for component in stripped.components() {
-            if !matches!(
-                component,
-                std::path::Component::Normal(_) | std::path::Component::CurDir
-            ) {
+            let std::path::Component::Normal(name) = component else {
                 return Err(InstallError::Extraction(format!(
                     "archive entry '{}' escapes the pod directory",
                     raw_path.display()
                 )));
+            };
+            if !crate::tooling::safe_archive_component(name) {
+                return Err(InstallError::Extraction(format!(
+                    "archive entry '{}' contains an unsafe path component",
+                    raw_path.display()
+                )));
             }
         }
-        if stripped.starts_with("native") {
+        if stripped
+            .components()
+            .next()
+            .and_then(|component| match component {
+                std::path::Component::Normal(name) => name.to_str(),
+                _ => None,
+            })
+            .is_some_and(|name| name.eq_ignore_ascii_case("native"))
+        {
             return Err(InstallError::Extraction(
                 "archive contains a 'native/' directory; native artifacts are published \
                  as separate release assets and may not be packed into the .pit.zst"
@@ -157,14 +233,35 @@ fn extract_pod_archive(compressed_data: &[u8], dest_dir: &Path) -> Result<(), In
             ));
         }
 
-        let dest = dest_dir.join(&stripped);
+        let dest = destination_root.join(&stripped);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
+            let canonical_parent = fs::canonicalize(parent)?;
+            if !canonical_parent.starts_with(&destination_root) {
+                return Err(InstallError::Extraction(format!(
+                    "archive entry '{}' escapes the pod directory",
+                    raw_path.display()
+                )));
+            }
+        }
+        if fs::symlink_metadata(&dest)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(InstallError::Extraction(format!(
+                "archive entry '{}' targets a symlink",
+                raw_path.display()
+            )));
         }
         entry.set_preserve_permissions(false);
         entry
             .unpack(&dest)
             .map_err(|e| InstallError::Extraction(e.to_string()))?;
+    }
+    if archive_root.is_none() || !destination_root.join("pit.toml").is_file() {
+        return Err(InstallError::Extraction(
+            "pod archive contains no root directory with pit.toml".to_string(),
+        ));
     }
     Ok(())
 }
@@ -191,6 +288,15 @@ async fn download_and_verify(
         )));
     }
 
+    if resp
+        .content_length()
+        .is_some_and(|size| size > MAX_POD_DOWNLOAD_BYTES as u64)
+    {
+        return Err(InstallError::Download(format!(
+            "artifact for {url} exceeds the {MAX_POD_DOWNLOAD_BYTES} byte limit"
+        )));
+    }
+
     let mut hasher = blake3::Hasher::new();
     let mut data = Vec::new();
     while let Some(chunk) = resp
@@ -198,6 +304,11 @@ async fn download_and_verify(
         .await
         .map_err(|e| InstallError::Download(e.to_string()))?
     {
+        if data.len().saturating_add(chunk.len()) > MAX_POD_DOWNLOAD_BYTES {
+            return Err(InstallError::Download(format!(
+                "artifact for {url} exceeds the {MAX_POD_DOWNLOAD_BYTES} byte limit"
+            )));
+        }
         hasher.update(&chunk);
         data.extend_from_slice(&chunk);
     }
@@ -227,6 +338,12 @@ fn write_file_atomic(dir: &Path, filename: &str, data: &[u8]) -> Result<(), Inst
     }
     fs::rename(&tmp, dir.join(filename))?;
     Ok(())
+}
+
+fn installed_archive_matches(dir: &Path, pod: &PodVersion) -> bool {
+    fs::read_to_string(dir.join(INSTALL_CHECKSUM_MARKER))
+        .is_ok_and(|checksum| checksum.trim() == pod.cksum)
+        && dir.join("pit.toml").is_file()
 }
 
 /// Downloads this pod's native library (and MSVC import library, if any) for
@@ -320,12 +437,23 @@ fn source_built_present(dir: &Path, native: &Native) -> bool {
 /// directory. Runs on the consumer's machine at install time, so no pod
 /// author CI, no per-platform uploads, and no waiting are ever required to
 /// ship a native pod. A no-op when the pod declares no `[native]` table.
-async fn ensure_source_built(pod: &PodVersion, dir: &Path) -> Result<(), InstallError> {
+async fn ensure_source_built(
+    pod: &PodVersion,
+    dir: &Path,
+    offline: bool,
+) -> Result<(), InstallError> {
     let Some(native) = installed_native_manifest(dir) else {
         return Ok(());
     };
     if source_built_present(dir, &native) {
         return Ok(());
+    }
+    if offline {
+        return Err(InstallError::Offline {
+            pod: pod.name.clone(),
+            vers: pod.vers.clone(),
+            target: "source build".to_string(),
+        });
     }
     println!(
         "\x1b[1;32m  Building\x1b[0m {}@{} native library from source (one-time, may take a few minutes)",
@@ -347,6 +475,20 @@ async fn ensure_native_artifact(
     locked: Option<&BTreeMap<String, String>>,
     offline: bool,
 ) -> Result<(), InstallError> {
+    if let Some(spec) = &pod.native
+        && let Some(key) = target::host()
+        && let Some(artifact) = spec.artifacts.get(key)
+        && let Some(expected) = locked.and_then(|values| values.get(key))
+        && *expected != artifact.cksum
+    {
+        return Err(InstallError::LockMismatch {
+            pod: pod.name.clone(),
+            vers: pod.vers.clone(),
+            target: key.to_string(),
+            locked: expected.clone(),
+            found: artifact.cksum.clone(),
+        });
+    }
     if let Some(spec) = &pod.native
         && let Some(key) = target::host()
         && let (Some(artifact), Some(local_name)) =
@@ -377,7 +519,7 @@ async fn ensure_native_artifact(
             available: spec.artifacts.keys().cloned().collect(),
         });
     }
-    ensure_source_built(pod, final_dir).await
+    ensure_source_built(pod, final_dir, offline).await
 }
 
 pub async fn install_pod_atomic(
@@ -387,7 +529,20 @@ pub async fn install_pod_atomic(
     offline: bool,
 ) -> Result<(), InstallError> {
     if final_dir.exists() {
+        if !installed_archive_matches(&final_dir, pod) {
+            return Err(InstallError::Checksum(format!(
+                "installed pod '{}@{}' has no matching verified archive marker",
+                pod.name, pod.vers
+            )));
+        }
         return ensure_native_artifact(pod, &final_dir, locked, offline).await;
+    }
+    if offline {
+        return Err(InstallError::Offline {
+            pod: pod.name.clone(),
+            vers: pod.vers.clone(),
+            target: "source archive".to_string(),
+        });
     }
 
     println!("\x1b[1;32m  Downloading\x1b[0m {}@{}", pod.name, pod.vers);
@@ -416,6 +571,41 @@ pub async fn install_pod_atomic(
     if let Err(e) = extraction {
         let _ = fs::remove_dir_all(&tmp_dir);
         return Err(e);
+    }
+    let parsed_config = fs::read_to_string(tmp_dir.join("pit.toml"))
+        .map_err(|error| InstallError::Extraction(format!("invalid extracted pit.toml: {error}")))
+        .and_then(|content| {
+            toml::from_str::<crate::tooling::manifest::Config>(&content).map_err(|error| {
+                InstallError::Extraction(format!("invalid extracted pit.toml: {error}"))
+            })
+        });
+    let parsed_config = match parsed_config {
+        Ok(config) => config,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(error);
+        }
+    };
+    let Some(manifest_pod) = &parsed_config.pod else {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(InstallError::Extraction(
+            "archive manifest has no [pod] table".to_string(),
+        ));
+    };
+    if manifest_pod.name != pod.name {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(InstallError::Extraction(format!(
+            "archive manifest declares pod '{}', expected '{}'",
+            manifest_pod.name, pod.name
+        )));
+    }
+    let extracted_root =
+        fs::canonicalize(&tmp_dir).map_err(|error| InstallError::Extraction(error.to_string()))?;
+    if let Err(error) =
+        crate::tooling::manifest::validate_pod_layout(&parsed_config, &extracted_root)
+    {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(InstallError::Extraction(error));
     }
 
     let has_host_artifact = pod.native.as_ref().is_some_and(|spec| {
@@ -452,6 +642,13 @@ pub async fn install_pod_atomic(
         }
     }
 
+    if let Err(error) = fs::write(
+        tmp_dir.join(INSTALL_CHECKSUM_MARKER),
+        format!("{}\n", pod.cksum),
+    ) {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(InstallError::Io(error));
+    }
     if let Some(parent) = final_dir.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -595,16 +792,22 @@ mod tests {
     }
 
     #[test]
-    fn install_pod_atomic_returns_ok_when_dir_exists() {
+    fn install_pod_atomic_accepts_existing_dir_only_with_matching_marker() {
         let dir = std::env::temp_dir().join("olive_install_test_exists");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("pit.toml"),
+            "[pod]\nname = \"test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(dir.join(INSTALL_CHECKSUM_MARKER), "verified\n").unwrap();
 
         let pod = PodVersion {
             name: "test".to_string(),
             vers: "1.0.0".to_string(),
             deps: vec![],
-            cksum: String::new(),
+            cksum: "verified".to_string(),
             dl: String::new(),
             yanked: false,
             olive_req: None,
@@ -612,8 +815,8 @@ mod tests {
         };
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(install_pod_atomic(&pod, dir.clone(), None, false));
-        assert!(result.is_ok());
+        let result = rt.block_on(install_pod_atomic(&pod, dir.clone(), None, true));
+        assert!(result.is_ok(), "{result:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -915,5 +1118,89 @@ mod tests {
         assert!(dest.join("pit.toml").is_file());
         assert!(dest.join("src/lib.liv").is_file());
         let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn extract_pod_archive_rejects_multiple_roots_and_duplicates() {
+        let dest = std::env::temp_dir().join("olive_extract_roots");
+        let _ = fs::remove_dir_all(&dest);
+        fs::create_dir_all(&dest).unwrap();
+
+        let multiple = build_test_archive(&[
+            (
+                "one/pit.toml",
+                tar::EntryType::Regular,
+                b"[pod]\nname = \"one\"\n",
+            ),
+            (
+                "two/pit.toml",
+                tar::EntryType::Regular,
+                b"[pod]\nname = \"two\"\n",
+            ),
+        ]);
+        assert!(extract_pod_archive(&multiple, &dest).is_err());
+
+        let duplicate = build_test_archive(&[
+            (
+                "one/pit.toml",
+                tar::EntryType::Regular,
+                b"[pod]\nname = \"one\"\n",
+            ),
+            (
+                "one/pit.toml",
+                tar::EntryType::Regular,
+                b"[pod]\nname = \"one\"\n",
+            ),
+        ]);
+        assert!(extract_pod_archive(&duplicate, &dest).is_err());
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn extract_pod_archive_rejects_case_alias_of_native_directory() {
+        let archive = build_test_archive(&[
+            (
+                "mini/pit.toml",
+                tar::EntryType::Regular,
+                b"[pod]\nname = \"mini\"\n",
+            ),
+            ("mini/Native/libmini.so", tar::EntryType::Regular, b"bad"),
+        ]);
+        let dest = std::env::temp_dir().join("olive_extract_native_case");
+        let _ = fs::remove_dir_all(&dest);
+        fs::create_dir_all(&dest).unwrap();
+        assert!(extract_pod_archive(&archive, &dest).is_err());
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn install_rejects_unmarked_directory_and_missing_offline_archive() {
+        let existing = std::env::temp_dir().join("olive_install_unmarked");
+        let _ = fs::remove_dir_all(&existing);
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(
+            existing.join("pit.toml"),
+            "[pod]\nname = \"x\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let pod = PodVersion {
+            name: "x".to_string(),
+            vers: "1.0.0".to_string(),
+            deps: vec![],
+            cksum: "expected".to_string(),
+            dl: "https://invalid.example/archive".to_string(),
+            yanked: false,
+            olive_req: None,
+            native: None,
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let marked = runtime.block_on(install_pod_atomic(&pod, existing.clone(), None, true));
+        assert!(matches!(marked, Err(InstallError::Checksum(_))));
+
+        let missing = std::env::temp_dir().join("olive_install_missing_offline");
+        let _ = fs::remove_dir_all(&missing);
+        let offline = runtime.block_on(install_pod_atomic(&pod, missing, None, true));
+        assert!(matches!(offline, Err(InstallError::Offline { .. })));
+        let _ = fs::remove_dir_all(&existing);
     }
 }

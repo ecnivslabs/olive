@@ -1,15 +1,18 @@
 use crate::tooling::manifest::Config;
-use crate::tooling::registry::{Dep, NativeArtifact, NativeFile, NativeSpec, PodVersion};
+use crate::tooling::registry::{
+    Dep, NativeArtifact, NativeFile, NativeSpec, PodVersion, validate_pod_coordinates,
+};
 use crate::tooling::target;
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
 const MAX_ARCHIVE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_TAR_BYTES: usize = 512 * 1024 * 1024;
 
 const REGISTRY_REPO: &str = "ecnivslabs/pit-registry";
 
@@ -52,6 +55,7 @@ impl GhClient {
 }
 
 pub fn publish(name: &str, version: &str) -> Result<(), String> {
+    validate_pod_coordinates(name, version)?;
     let token = std::env::var("GITHUB_TOKEN")
         .or_else(|_| std::env::var("PIT_TOKEN"))
         .map_err(|_| "GITHUB_TOKEN or PIT_TOKEN env var required for publish".to_string())?;
@@ -128,7 +132,10 @@ fn check_uncommitted_changes() {
 
 fn read_manifest() -> Result<Config, String> {
     let content = fs::read_to_string("pit.toml").map_err(|_| "pit.toml not found")?;
-    toml::from_str(&content).map_err(|e| format!("invalid pit.toml: {e}"))
+    let config: Config = toml::from_str(&content).map_err(|e| format!("invalid pit.toml: {e}"))?;
+    let root = std::env::current_dir().map_err(|e| format!("cannot resolve project root: {e}"))?;
+    crate::tooling::manifest::validate_pod_layout(&config, &root)?;
+    Ok(config)
 }
 
 fn push_git_ref_and_tag(name: &str, version: &str) {
@@ -176,19 +183,16 @@ fn parse_github_repo(url: &str) -> Option<String> {
 }
 
 fn git_origin_url() -> Option<String> {
-    let config = fs::read_to_string(".git/config").ok()?;
-    let mut in_origin = false;
-    for line in config.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[remote \"origin\"]" {
-            in_origin = true;
-        } else if in_origin && trimmed.starts_with("url = ") {
-            return Some(trimmed.strip_prefix("url = ")?.to_string());
-        } else if trimmed.starts_with('[') {
-            in_origin = false;
-        }
+    let output = std::process::Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    None
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|url| url.trim().to_string())
 }
 
 fn get_current_user(gh: &GhClient) -> Result<String, String> {
@@ -210,6 +214,29 @@ fn build_archive(name: &str, version: &str, manifest: &Config) -> Result<Vec<u8>
     let mut tar_bytes: Vec<u8> = Vec::new();
 
     {
+        let mut includes = HashSet::new();
+        if let Some(pod) = &manifest.pod {
+            for entry in &pod.include {
+                let relative = crate::tooling::manifest::safe_relative_path(entry, "pod include")?;
+                let normalized = relative.to_string_lossy().replace('\\', "/");
+                if normalized == "pit.toml"
+                    || normalized == "README.md"
+                    || normalized == "LICENSE"
+                    || normalized == "src"
+                    || normalized.starts_with("src/")
+                {
+                    return Err(format!(
+                        "error: [pod].include '{entry}' overlaps files already packed by pit"
+                    ));
+                }
+                if !includes.insert(normalized.clone()) {
+                    return Err(format!(
+                        "error: [pod].include contains duplicate path '{normalized}'"
+                    ));
+                }
+            }
+        }
+
         let mut builder = tar::Builder::new(&mut tar_bytes);
 
         let toml_bytes = fs::read("pit.toml").map_err(|_| "pit.toml not found")?;
@@ -247,12 +274,21 @@ fn append_liv_tree(
     for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "refusing to publish symlink outside archive: {}",
+                path.display()
+            ));
+        }
         let tar_path = format!("{}/{}", tar_prefix, entry.file_name().to_string_lossy());
-        if path.is_dir() {
+        if metadata.is_dir() {
             append_liv_tree(builder, &path, &tar_path)?;
-        } else if path.extension().is_some_and(|ext| ext == "liv") {
+        } else if metadata.is_file() && path.extension().is_some_and(|ext| ext == "liv") {
             let bytes = fs::read(&path).map_err(|e| e.to_string())?;
             append_bytes(builder, &bytes, &tar_path)?;
+        } else if !metadata.is_file() {
+            return Err(format!("unsupported archive input: {}", path.display()));
         }
     }
     Ok(())
@@ -263,23 +299,35 @@ fn append_include(
     prefix: &str,
     entry: &str,
 ) -> Result<(), String> {
-    if entry == "native" || entry.starts_with("native/") {
+    let relative = crate::tooling::manifest::safe_relative_path(entry, "pod include")?;
+    let first = relative
+        .components()
+        .next()
+        .and_then(|component| match component {
+            std::path::Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .is_some_and(|name| name.eq_ignore_ascii_case("native"));
+    if first {
         return Err(
             "error: [pod].include may not list native/\n  native libraries belong in release assets, not the .pit.zst"
                 .to_string(),
         );
     }
     let path = Path::new(entry);
-    if !path.exists() {
-        return Err(format!(
-            "error: [pod].include entry '{entry}' does not exist"
-        ));
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| format!("error: [pod].include entry '{entry}' does not exist"))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("error: [pod].include entry '{entry}' is a symlink"));
     }
-    if path.is_dir() {
-        append_include_dir(builder, path, &format!("{prefix}/{entry}"))?;
-    } else {
+    let tar_path = format!("{prefix}/{}", relative.to_string_lossy().replace('\\', "/"));
+    if metadata.is_dir() {
+        append_include_dir(builder, path, &tar_path)?;
+    } else if metadata.is_file() {
         let bytes = fs::read(path).map_err(|e| format!("could not read {entry}: {e}"))?;
-        append_bytes(builder, &bytes, &format!("{prefix}/{entry}"))?;
+        append_bytes(builder, &bytes, &tar_path)?;
+    } else {
+        return Err(format!("error: unsupported include entry '{entry}'"));
     }
     Ok(())
 }
@@ -292,12 +340,21 @@ fn append_include_dir(
     for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "refusing to publish symlink outside archive: {}",
+                path.display()
+            ));
+        }
         let tar_path = format!("{}/{}", tar_prefix, entry.file_name().to_string_lossy());
-        if path.is_dir() {
+        if metadata.is_dir() {
             append_include_dir(builder, &path, &tar_path)?;
-        } else {
+        } else if metadata.is_file() {
             let bytes = fs::read(&path).map_err(|e| e.to_string())?;
             append_bytes(builder, &bytes, &tar_path)?;
+        } else {
+            return Err(format!("unsupported archive input: {}", path.display()));
         }
     }
     Ok(())
@@ -417,6 +474,13 @@ fn append_bytes(
     bytes: &[u8],
     path: &str,
 ) -> Result<(), String> {
+    let output = builder.get_mut();
+    if output.len().saturating_add(bytes.len()).saturating_add(512) > MAX_TAR_BYTES {
+        return Err(format!(
+            "pod source data exceeds the {} byte uncompressed limit",
+            MAX_TAR_BYTES
+        ));
+    }
     let mut header = tar::Header::new_gnu();
     header.set_size(bytes.len() as u64);
     header.set_mode(0o644);
@@ -599,7 +663,7 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
     let user = get_current_user(gh)?;
     let fork_repo = ensure_fork(gh, &user)?;
 
-    let prefix = &pod.name[..pod.name.len().min(2)];
+    let prefix = pod.name.chars().take(2).collect::<String>();
     let file_path = format!("{}/{}", prefix, pod.name);
     let branch = format!("add-{}-{}", pod.name, pod.vers);
 
@@ -855,6 +919,31 @@ mod tests {
         assert!(names.iter().any(|n| n.ends_with("engine/lib.rs")));
         assert!(names.iter().any(|n| n.ends_with("engine/sub/mod.rs")));
         assert!(names.iter().any(|n| n.ends_with("engine/notes.txt")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn include_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("olive_publish_include_symlink");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, b"secret").unwrap();
+        symlink(&outside, dir.join("linked.txt")).unwrap();
+
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let mut tar_bytes = Vec::new();
+        let result = {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            append_include(&mut builder, "pkg-1.0", "linked.txt")
+        };
+        std::env::set_current_dir(cwd).unwrap();
+        assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

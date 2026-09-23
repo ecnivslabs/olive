@@ -47,6 +47,7 @@ pub fn ensure_built(native: &Native) -> Result<(), String> {
 /// published source with their own toolchain. Registry review is the trust
 /// boundary, exactly as for downloaded artifacts.
 pub fn ensure_built_in(root: &Path, native: &Native) -> Result<(), String> {
+    crate::tooling::manifest::validate_native_layout(native)?;
     let argv = native.build_argv();
     let (program, args) = argv
         .split_first()

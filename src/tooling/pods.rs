@@ -1,6 +1,6 @@
 use crate::commands::utils::workspace_root;
 use crate::tooling::installer;
-use crate::tooling::lockfile::{LockedPod, Lockfile, load_lockfile, save_lockfile};
+use crate::tooling::lockfile::{LockedPod, Lockfile, load_lockfile_checked, save_lockfile};
 use crate::tooling::solver;
 use std::collections::HashMap;
 use std::fs;
@@ -10,7 +10,6 @@ use std::path::PathBuf;
 pub enum PodError {
     Solver(solver::SolverError),
     Install(installer::InstallError),
-    Io(std::io::Error),
     Lockfile(String),
 }
 
@@ -19,7 +18,6 @@ impl std::fmt::Display for PodError {
         match self {
             PodError::Solver(e) => write!(f, "{}", e),
             PodError::Install(e) => write!(f, "{}", e),
-            PodError::Io(e) => write!(f, "I/O error: {}", e),
             PodError::Lockfile(msg) => write!(f, "Lockfile error: {}", msg),
         }
     }
@@ -52,9 +50,10 @@ pub async fn ensure_deps_installed(
 ) -> Result<(), PodError> {
     let workspace = workspace_root();
     let lock_path = workspace.join("pit.lock");
-    let lockfile = load_lockfile(&lock_path);
+    let lockfile = load_lockfile_checked(&lock_path).map_err(PodError::Lockfile)?;
 
     let mut locked_state = HashMap::new();
+    let mut locked_archives: HashMap<String, String> = HashMap::new();
     let mut locked_native: HashMap<String, std::collections::BTreeMap<String, String>> =
         HashMap::new();
     if let Some(lk) = &lockfile {
@@ -66,6 +65,7 @@ pub async fn ensure_deps_installed(
             };
             if !is_unlocked {
                 locked_state.insert(pod.name.clone(), pod.version.clone());
+                locked_archives.insert(pod.name.clone(), pod.cksum.clone());
                 if !pod.native.is_empty() {
                     locked_native.insert(pod.name.clone(), pod.native.clone());
                 }
@@ -79,6 +79,14 @@ pub async fn ensure_deps_installed(
 
     let mut futures = Vec::new();
     for pod in &resolved_pods {
+        if let Some(locked_cksum) = locked_archives.get(&pod.name)
+            && locked_cksum != &pod.cksum
+        {
+            return Err(PodError::Lockfile(format!(
+                "registry archive for {}@{} changed checksum (locked {}, found {})",
+                pod.name, pod.vers, locked_cksum, pod.cksum
+            )));
+        }
         let final_dir = installed_path(&pod.name, &pod.vers);
         let locked = locked_native.get(&pod.name);
         futures.push(installer::install_pod_atomic(
@@ -120,9 +128,7 @@ pub async fn ensure_deps_installed(
         pods: locked_pods,
     };
 
-    let tmp_lock = workspace.join("pit.lock.tmp");
-    save_lockfile(&tmp_lock, &new_lockfile).map_err(PodError::Lockfile)?;
-    fs::rename(tmp_lock, lock_path).map_err(PodError::Io)?;
+    save_lockfile(&lock_path, &new_lockfile).map_err(PodError::Lockfile)?;
 
     Ok(())
 }
@@ -143,7 +149,9 @@ pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
 
     let mut resolved_version = None;
     let workspace = workspace_root();
-    if let Some(lockfile) = load_lockfile(&workspace.join("pit.lock"))
+    if let Some(lockfile) = load_lockfile_checked(&workspace.join("pit.lock"))
+        .ok()
+        .flatten()
         && let Some(pod) = lockfile.pods.iter().find(|p| p.name == pod_name)
     {
         resolved_version = Some(pod.version.clone());
@@ -189,11 +197,10 @@ pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
             .get("pod")
             .and_then(|p| p.get("entry"))
             .and_then(|e| e.as_str())
+        && let Ok(entry_path) =
+            crate::tooling::manifest::resolve_file_within(&pod_dir, entry, "pod entry")
     {
-        let entry_path = pod_dir.join(entry);
-        if entry_path.exists() {
-            return Some(entry_path);
-        }
+        return Some(entry_path);
     }
 
     let candidates = [
@@ -246,16 +253,6 @@ mod tests {
         let e = PodError::Install(installer::InstallError::Download("timeout".into()));
         let msg = format!("{e}");
         assert!(msg.contains("download failed"));
-    }
-
-    #[test]
-    fn pod_error_io_display() {
-        let e = PodError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "file missing",
-        ));
-        let msg = format!("{e}");
-        assert!(msg.contains("I/O error"));
     }
 
     #[test]

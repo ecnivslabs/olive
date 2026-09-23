@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::fs;
+use std::collections::{BTreeMap, HashSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -24,19 +25,74 @@ pub struct LockedPod {
     pub native: BTreeMap<String, String>,
 }
 
-pub fn load_lockfile(path: &Path) -> Option<Lockfile> {
+pub fn load_lockfile_checked(path: &Path) -> Result<Option<Lockfile>, String> {
     if !path.exists() {
-        return None;
+        return Ok(None);
     }
-    let content = fs::read_to_string(path).ok()?;
-    toml::from_str(&content).ok()
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read lockfile {}: {error}", path.display()))?;
+    let lockfile: Lockfile = toml::from_str(&content)
+        .map_err(|error| format!("Invalid lockfile {}: {error}", path.display()))?;
+    if lockfile.version != 1 {
+        return Err(format!(
+            "Unsupported lockfile version {} in {}",
+            lockfile.version,
+            path.display()
+        ));
+    }
+    let mut names = HashSet::new();
+    for pod in &lockfile.pods {
+        if !names.insert(pod.name.as_str()) {
+            return Err(format!(
+                "Invalid lockfile {}: duplicate pod '{}'",
+                path.display(),
+                pod.name
+            ));
+        }
+        semver::Version::parse(&pod.version).map_err(|error| {
+            format!(
+                "Invalid lockfile {}: pod '{}' has invalid version '{}': {error}",
+                path.display(),
+                pod.name,
+                pod.version
+            )
+        })?;
+    }
+    Ok(Some(lockfile))
+}
+
+#[cfg(test)]
+pub fn load_lockfile(path: &Path) -> Option<Lockfile> {
+    load_lockfile_checked(path).ok().flatten()
 }
 
 pub fn save_lockfile(path: &Path, lockfile: &Lockfile) -> Result<(), String> {
     let content =
-        toml::to_string(lockfile).map_err(|e| format!("Failed to serialize lockfile: {}", e))?;
-    fs::write(path, content).map_err(|e| format!("Failed to write lockfile: {}", e))?;
-    Ok(())
+        toml::to_string(lockfile).map_err(|e| format!("Failed to serialize lockfile: {e}"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "lockfile path has no parent directory".to_string())?;
+    for _ in 0..16 {
+        let nonce = rand::random::<u64>();
+        let temp = parent.join(format!(".pit.lock-{nonce:x}.tmp"));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Failed to create lockfile temp: {error}")),
+        };
+        if let Err(error) = file
+            .write_all(content.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = fs::remove_file(&temp);
+            return Err(format!("Failed to write lockfile: {error}"));
+        }
+        return fs::rename(&temp, path).map_err(|error| {
+            let _ = fs::remove_file(&temp);
+            format!("Failed to replace lockfile: {error}")
+        });
+    }
+    Err("Failed to allocate a unique lockfile temp file".to_string())
 }
 
 #[cfg(test)]
@@ -140,6 +196,52 @@ mod tests {
         let pod = make_pod("standalone", "1.0", "cksum", &[]);
         let toml_str = toml::to_string(&pod).unwrap();
         assert!(!toml_str.contains("dependencies"));
+    }
+
+    #[test]
+    fn checked_load_rejects_bad_version_and_duplicate_pods() {
+        let dir = std::env::temp_dir().join("olive_lockfile_test_strict");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pit.lock");
+
+        fs::write(&path, "version = 2\n").unwrap();
+        assert!(load_lockfile_checked(&path).is_err());
+
+        fs::write(
+            &path,
+            concat!(
+                "version = 1\n",
+                "[[pods]]\nname = \"dup\"\nversion = \"1.0.0\"\ncksum = \"a\"\n",
+                "[[pods]]\nname = \"dup\"\nversion = \"1.0.0\"\ncksum = \"b\"\n"
+            ),
+        )
+        .unwrap();
+        assert!(load_lockfile_checked(&path).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_lockfile_does_not_follow_fixed_temp_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("olive_lockfile_test_symlink");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("pit.lock");
+        let victim = dir.join("victim.txt");
+        fs::write(&victim, b"unchanged").unwrap();
+        symlink(&victim, dir.join("pit.lock.tmp")).unwrap();
+
+        let lockfile = Lockfile {
+            version: 1,
+            pods: vec![make_pod("safe", "1.0.0", "checksum", &[])],
+        };
+        save_lockfile(&lock, &lockfile).unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"unchanged");
+        assert_eq!(load_lockfile_checked(&lock).unwrap().unwrap().pods.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

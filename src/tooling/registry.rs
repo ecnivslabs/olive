@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
+
+const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct PitConfig {
@@ -19,14 +22,22 @@ fn get_registry_base() -> String {
         .join(".pit")
         .join("config.toml");
 
-    if let Ok(content) = fs::read_to_string(config_path)
+    let configured = if let Ok(content) = fs::read_to_string(config_path)
         && let Ok(config) = toml::from_str::<PitConfig>(&content)
         && let Some(reg) = config.registry
         && let Some(url) = reg.url
     {
-        return url;
-    }
-    "https://raw.githubusercontent.com/ecnivslabs/pit-registry/master".to_string()
+        url
+    } else {
+        "https://raw.githubusercontent.com/ecnivslabs/pit-registry/master".to_string()
+    };
+    configured.trim_end_matches('/').to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RegistryCache {
+    registry: String,
+    body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,91 +95,216 @@ pub struct NativeFile {
     pub cksum: String,
 }
 
-fn registry_url(name: &str) -> String {
-    let prefix = &name[..name.len().min(2)];
+fn validate_component(value: &str, label: &str, allow_plus: bool) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 255
+        || value == "."
+        || value == ".."
+        || value.contains("..")
+        || value.contains("@{")
+    {
+        return Err(format!("invalid {label}: {value:?}"));
+    }
+
+    let valid_char = |ch: char| {
+        if ch.is_ascii() {
+            ch.is_ascii_alphanumeric()
+                || matches!(ch, '_' | '-' | '.' | '@')
+                || (allow_plus && ch == '+')
+        } else {
+            !ch.is_control() && !matches!(ch, '/' | '\\' | '?' | '#' | '%')
+        }
+    };
+    if !value.chars().all(valid_char) || value.ends_with('.') || value.ends_with(' ') {
+        return Err(format!("invalid {label}: {value:?}"));
+    }
+
+    if crate::tooling::windows_reserved_stem(value) {
+        return Err(format!("invalid {label}: {value:?}"));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_pod_name(name: &str) -> Result<(), String> {
+    validate_component(name, "pod name", false)
+}
+
+fn validate_version(version: &str) -> Result<(), String> {
+    validate_component(version, "pod version", true)
+}
+
+fn validate_filename(filename: &str) -> Result<(), String> {
+    validate_component(filename, "native filename", false)
+}
+
+pub(crate) fn validate_pod_coordinates(name: &str, version: &str) -> Result<(), String> {
+    validate_pod_name(name)?;
+    validate_version(version)
+}
+
+fn validate_pod_version(version: &PodVersion) -> Result<(), String> {
+    validate_pod_name(&version.name)?;
+    validate_version(&version.vers)?;
+    for dependency in &version.deps {
+        validate_pod_name(&dependency.name)?;
+    }
+    if let Some(native) = &version.native {
+        validate_filename(&native.lib)?;
+        for artifact in native.artifacts.values() {
+            validate_filename(&artifact.file)?;
+            if let Some(import_library) = &artifact.implib {
+                validate_filename(&import_library.file)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn registry_url(name: &str) -> Result<String, String> {
+    validate_pod_name(name)?;
+    let prefix = name.chars().take(2).collect::<String>();
     let base = get_registry_base();
-    format!("{}/{}/{}", base, prefix, name)
+    Ok(format!("{}/{}/{}", base, prefix, name))
 }
 
 fn cache_path(name: &str) -> PathBuf {
+    let digest = blake3::hash(name.as_bytes()).to_hex().to_string();
     dirs::home_dir()
         .expect("no home dir")
         .join(".pit")
         .join("cache")
         .join("registry")
-        .join(name)
+        .join(format!("{digest}.json"))
+}
+
+fn read_cached(name: &str) -> Result<String, String> {
+    let path = cache_path(name);
+    let content = fs::read(&path)
+        .map_err(|error| format!("cache read failed for '{}': {error}", path.display()))?;
+    let cache: RegistryCache = serde_json::from_slice(&content)
+        .map_err(|error| format!("invalid registry cache {}: {error}", path.display()))?;
+    let expected = get_registry_base();
+    if cache.registry != expected {
+        return Err(format!(
+            "registry cache for '{name}' belongs to {}, not {expected}",
+            cache.registry
+        ));
+    }
+    Ok(cache.body)
+}
+
+fn write_cached(name: &str, body: &str) -> Result<(), String> {
+    let path = cache_path(name);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "registry cache path has no parent".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("cannot create registry cache directory: {error}"))?;
+    let encoded = serde_json::to_vec(&RegistryCache {
+        registry: get_registry_base(),
+        body: body.to_string(),
+    })
+    .map_err(|error| error.to_string())?;
+    for _ in 0..16 {
+        let temp = parent.join(format!(
+            ".{}.{}.tmp",
+            path.file_name().unwrap().to_string_lossy(),
+            rand::random::<u64>()
+        ));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("cannot create registry cache temp: {error}")),
+        };
+        if let Err(error) = file.write_all(&encoded).and_then(|()| file.sync_all()) {
+            let _ = fs::remove_file(&temp);
+            return Err(format!("cannot write registry cache: {error}"));
+        }
+        return fs::rename(&temp, &path).map_err(|error| {
+            let _ = fs::remove_file(&temp);
+            format!("cannot replace registry cache: {error}")
+        });
+    }
+    Err("cannot allocate a unique registry cache temp file".to_string())
 }
 
 pub async fn fetch_versions(name: &str, offline: bool) -> Result<Vec<PodVersion>, String> {
-    let cache = cache_path(name);
-
+    validate_pod_name(name)?;
     if offline {
-        if cache.exists() {
-            let body =
-                fs::read_to_string(&cache).map_err(|e| format!("cache read failed: {}", e))?;
-            return parse_versions(&body);
-        } else {
-            return Err(format!("offline mode: pod '{}' not found in cache", name));
-        }
+        let body = read_cached(name).map_err(|_| {
+            format!("offline mode: pod '{name}' not found in matching registry cache")
+        })?;
+        return parse_versions_for(&body, name);
     }
 
-    let prefix = &name[..name.len().min(2)];
-    let api_url = format!(
-        "https://api.github.com/repos/ecnivslabs/pit-registry/contents/{}/{}",
-        prefix, name
-    );
+    let url = registry_url(name)?;
     let client = reqwest::Client::new();
-
-    // Try GitHub API raw header first for immediate, uncached updates.
-    let body = match client
-        .get(&api_url)
+    let mut response = match client
+        .get(&url)
         .header("User-Agent", "pit/0.1.0")
-        .header("Accept", "application/vnd.github.v3.raw")
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => resp.text().await.unwrap_or_default(),
-        _ => {
-            // Fallback to raw CDN URL
-            let url = registry_url(name);
-            match client
-                .get(&url)
-                .header("User-Agent", "pit/0.1.0")
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    if resp.status() == 404 {
-                        return Err(format!("pod '{}' not found in registry", name));
-                    }
-                    resp.text().await.map_err(|e| e.to_string())?
-                }
-                Err(e) => {
-                    if cache.exists() {
-                        let cached_body =
-                            fs::read_to_string(&cache).map_err(|ce| ce.to_string())?;
-                        return parse_versions(&cached_body);
-                    }
-                    return Err(format!("registry fetch failed: {}", e));
-                }
-            }
+        Ok(response) => response,
+        Err(error) => {
+            let cached = read_cached(name)
+                .map_err(|_| format!("registry fetch failed for '{name}': {error}"))?;
+            return parse_versions_for(&cached, name);
         }
     };
-
-    let cache = cache_path(name);
-    if let Some(parent) = cache.parent() {
-        let _ = fs::create_dir_all(parent);
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("pod '{name}' not found in registry"));
     }
-    let _ = fs::write(&cache, &body);
-
-    parse_versions(&body)
+    if !response.status().is_success() {
+        return Err(format!(
+            "registry returned HTTP {} for pod '{name}'",
+            response.status()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_REGISTRY_BYTES as u64)
+    {
+        return Err(format!("registry metadata for '{name}' exceeds 4 MiB"));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("registry read failed for '{name}': {error}"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_REGISTRY_BYTES {
+            return Err(format!("registry metadata for '{name}' exceeds 4 MiB"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8(bytes)
+        .map_err(|_| format!("registry metadata for '{name}' is not UTF-8"))?;
+    let versions = parse_versions_for(&body, name)?;
+    write_cached(name, &body)?;
+    Ok(versions)
 }
 
 fn parse_versions(body: &str) -> Result<Vec<PodVersion>, String> {
     body.lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
+        .map(|line| {
+            let version: PodVersion = serde_json::from_str(line).map_err(|e| e.to_string())?;
+            validate_pod_version(&version)?;
+            Ok(version)
+        })
         .collect()
+}
+
+fn parse_versions_for(body: &str, name: &str) -> Result<Vec<PodVersion>, String> {
+    let versions = parse_versions(body)?;
+    if versions.iter().any(|version| version.name != name) {
+        return Err(format!(
+            "registry returned a version for a different pod than {name:?}"
+        ));
+    }
+    Ok(versions)
 }
 
 pub fn resolve_version<'a>(versions: &'a [PodVersion], req: &str) -> Option<&'a PodVersion> {
@@ -382,14 +518,55 @@ mod tests {
 
     #[test]
     fn registry_url_two_char_prefix() {
-        let url = registry_url("mypod");
+        let url = registry_url("mypod").unwrap();
         assert!(url.contains("/my/mypod"));
     }
 
     #[test]
     fn registry_url_single_char_name() {
-        let url = registry_url("a");
+        let url = registry_url("a").unwrap();
         assert!(url.contains("/a/a"));
+    }
+
+    #[test]
+    fn registry_url_handles_multibyte_name_without_panicking() {
+        let url = std::panic::catch_unwind(|| registry_url("€"))
+            .unwrap()
+            .unwrap();
+        assert!(url.ends_with("/€/€"));
+    }
+
+    #[test]
+    fn parse_versions_rejects_path_traversal_name() {
+        let line = r#"{"name":"../escape","vers":"1.0.0","cksum":"a","dl":""}"#;
+        assert!(parse_versions(line).is_err());
+    }
+
+    #[test]
+    fn parse_versions_rejects_path_traversal_version() {
+        let line = r#"{"name":"safe","vers":"../../escape","cksum":"a","dl":""}"#;
+        assert!(parse_versions(line).is_err());
+    }
+
+    #[test]
+    fn parse_versions_rejects_unsafe_native_filename() {
+        let line = r#"{"name":"safe","vers":"1.0.0","cksum":"a","dl":"","native":{"lib":"safe","artifacts":{"linux-x86_64":{"file":"../../escape.so","url":"https://example.com/a","cksum":"b"}}}}"#;
+        assert!(parse_versions(line).is_err());
+    }
+
+    #[test]
+    fn parse_versions_for_rejects_name_mismatch() {
+        let line = r#"{"name":"other","vers":"1.0.0","cksum":"a","dl":""}"#;
+        assert!(parse_versions_for(line, "safe").is_err());
+    }
+
+    #[test]
+    fn registry_url_handles_combining_and_emoji_names() {
+        for name in ["e\u{301}", "東京", "😀"] {
+            let result = std::panic::catch_unwind(|| registry_url(name));
+            assert!(result.is_ok(), "panic for {name}");
+            assert!(result.unwrap().is_ok(), "invalid name {name}");
+        }
     }
 
     #[test]
@@ -504,6 +681,40 @@ mod tests {
             positions.windows(2).all(|w| w[0] < w[1]),
             "artifact keys must serialize in sorted order: {json}"
         );
+    }
+
+    #[test]
+    fn cache_paths_are_exact_name_digests() {
+        let euro = cache_path("€");
+        let combining = cache_path("e\u{301}");
+        assert_ne!(euro, combining);
+        assert!(
+            euro.extension()
+                .is_some_and(|extension| extension == "json")
+        );
+        assert!(
+            euro.file_stem()
+                .is_some_and(|stem| { stem.to_str().is_some_and(|value| value.len() == 64) })
+        );
+    }
+
+    #[test]
+    fn registry_cache_envelope_round_trips() {
+        let cache = RegistryCache {
+            registry: "https://registry.example/root".to_string(),
+            body: "metadata".to_string(),
+        };
+        let encoded = serde_json::to_vec(&cache).unwrap();
+        let decoded: RegistryCache = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.registry, cache.registry);
+        assert_eq!(decoded.body, cache.body);
+    }
+
+    #[test]
+    fn windows_device_aliases_are_rejected() {
+        for name in ["CON", "com1", "LPT9", "COM¹", "lpt³"] {
+            assert!(validate_pod_name(name).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -10,6 +10,9 @@ use tar::Archive;
 use crate::tooling::target;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAX_SOURCE_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_SOURCE_ARCHIVE_ENTRIES: usize = 100_000;
+const MAX_RELEASE_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 fn get_repo() -> String {
     env::var("PIT_UPSTREAM_REPO").unwrap_or_else(|_| "ecnivslabs/olive".to_string())
 }
@@ -75,9 +78,21 @@ fn download_artifact(client: &reqwest::blocking::Client, url: &str) -> Result<Ve
         return Err(format!("download failed with status: {}", resp.status()));
     }
 
-    resp.bytes()
-        .map(|b| b.to_vec())
-        .map_err(|e| format!("read failed: {}", e))
+    if resp
+        .content_length()
+        .is_some_and(|size| size > MAX_RELEASE_DOWNLOAD_BYTES)
+    {
+        return Err("download exceeds the 1 GiB artifact limit".to_string());
+    }
+    let mut limited = resp.take(MAX_RELEASE_DOWNLOAD_BYTES + 1);
+    let mut data = Vec::new();
+    limited
+        .read_to_end(&mut data)
+        .map_err(|e| format!("read failed: {e}"))?;
+    if data.len() as u64 > MAX_RELEASE_DOWNLOAD_BYTES {
+        return Err("download exceeds the 1 GiB artifact limit".to_string());
+    }
+    Ok(data)
 }
 
 fn verify_blake3(buf: &[u8], filename: &str, checksums: &str) -> Result<(), String> {
@@ -106,7 +121,8 @@ fn verify_blake3(buf: &[u8], filename: &str, checksums: &str) -> Result<(), Stri
 
 fn stdlib_relative_path(path: &Path) -> Result<Option<PathBuf>, String> {
     let mut components = path.components();
-    if !matches!(components.next(), Some(Component::Normal(_))) {
+    if !matches!(components.next(), Some(Component::Normal(name)) if name == OsStr::new("olive-src"))
+    {
         return Ok(None);
     }
     if !matches!(components.next(), Some(Component::Normal(name)) if name == OsStr::new("lib")) {
@@ -118,6 +134,9 @@ fn stdlib_relative_path(path: &Path) -> Result<Option<PathBuf>, String> {
         let Component::Normal(name) = component else {
             return Err(format!("unsafe path in source archive: {}", path.display()));
         };
+        if !crate::tooling::safe_archive_component(name) {
+            return Err(format!("unsafe path in source archive: {}", path.display()));
+        }
         relative.push(name);
     }
 
@@ -129,31 +148,54 @@ fn stdlib_relative_path(path: &Path) -> Result<Option<PathBuf>, String> {
 }
 
 fn extract_stdlib_archive(source: &[u8], destination: &Path) -> Result<(), String> {
+    let destination = fs::canonicalize(destination)
+        .map_err(|error| format!("failed to open extraction directory: {error}"))?;
     let decoder = GzDecoder::new(Cursor::new(source));
-    let mut archive = Archive::new(decoder);
+    let mut limited = decoder.take(MAX_SOURCE_ARCHIVE_BYTES + 1);
+    let mut decompressed = Vec::new();
+    limited
+        .read_to_end(&mut decompressed)
+        .map_err(|error| format!("failed to decompress source archive: {error}"))?;
+    if decompressed.len() as u64 > MAX_SOURCE_ARCHIVE_BYTES {
+        return Err(format!(
+            "source archive exceeds the {MAX_SOURCE_ARCHIVE_BYTES} byte decompressed limit"
+        ));
+    }
+    let mut archive = Archive::new(Cursor::new(decompressed));
     let entries = archive
         .entries()
         .map_err(|error| format!("failed to read tar entries: {error}"))?;
+    let mut extracted_files = 0usize;
+    let mut entry_count = 0usize;
+    let mut seen = std::collections::HashSet::new();
 
     for entry in entries {
-        let mut entry = entry.map_err(|error| format!("failed to read tar entry: {error}"))?;
-        let entry_type = entry.header().entry_type();
-        if !entry_type.is_dir() && !entry_type.is_file() && !entry_type.is_contiguous() {
+        entry_count += 1;
+        if entry_count > MAX_SOURCE_ARCHIVE_ENTRIES {
             return Err(format!(
-                "unsupported entry type in source archive: {}",
-                entry
-                    .path()
-                    .map_err(|error| format!("invalid tar entry path: {error}"))?
-                    .display()
+                "source archive exceeds the {MAX_SOURCE_ARCHIVE_ENTRIES} entry limit"
             ));
         }
-
+        let mut entry = entry.map_err(|error| format!("failed to read tar entry: {error}"))?;
         let path = entry
             .path()
             .map_err(|error| format!("invalid tar entry path: {error}"))?;
         let Some(relative) = stdlib_relative_path(&path)? else {
             continue;
         };
+        if !seen.insert(relative.clone()) {
+            return Err(format!(
+                "source archive contains duplicate entry '{}'",
+                path.display()
+            ));
+        }
+        let entry_type = entry.header().entry_type();
+        if !entry_type.is_dir() && !entry_type.is_file() && !entry_type.is_contiguous() {
+            return Err(format!(
+                "unsupported entry type in source archive: {}",
+                path.display()
+            ));
+        }
         let target = destination.join(relative);
 
         if entry_type.is_dir() {
@@ -171,13 +213,38 @@ fn extract_stdlib_archive(source: &[u8], destination: &Path) -> Result<(), Strin
                         parent.display()
                     )
                 })?;
+                let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+                    format!(
+                        "failed to resolve source directory {}: {error}",
+                        parent.display()
+                    )
+                })?;
+                if !canonical_parent.starts_with(&destination) {
+                    return Err(format!(
+                        "source archive path escapes extraction directory: {}",
+                        path.display()
+                    ));
+                }
+            }
+            if fs::symlink_metadata(&target)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                return Err(format!(
+                    "source archive path is a symlink: {}",
+                    path.display()
+                ));
             }
             entry
                 .unpack(&target)
                 .map_err(|error| format!("failed to unpack {}: {error}", target.display()))?;
+            extracted_files += 1;
         }
     }
 
+    if extracted_files == 0 {
+        return Err("source archive contains no regular files under olive-src/lib".to_string());
+    }
     Ok(())
 }
 
@@ -417,6 +484,31 @@ mod tests {
         bytes
     }
 
+    fn source_archive_with_outside_link() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let encoder = GzEncoder::new(&mut bytes, Compression::default());
+            let mut archive = Builder::new(encoder);
+            let mut file_header = Header::new_gnu();
+            file_header.set_path("olive-src/lib/value.txt").unwrap();
+            file_header.set_size(5);
+            file_header.set_mode(0o644);
+            file_header.set_cksum();
+            archive.append(&file_header, &b"value"[..]).unwrap();
+            let mut link_header = Header::new_gnu();
+            link_header.set_entry_type(EntryType::symlink());
+            link_header.set_path("docs/link").unwrap();
+            link_header.set_link_name("/tmp/outside").unwrap();
+            link_header.set_size(0);
+            link_header.set_mode(0o777);
+            link_header.set_cksum();
+            archive.append(&link_header, empty()).unwrap();
+            let encoder = archive.into_inner().unwrap();
+            encoder.finish().unwrap();
+        }
+        bytes
+    }
+
     fn test_case(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("olive-upgrade-{name}-{}", std::process::id()));
@@ -430,7 +522,7 @@ mod tests {
         let case = test_case("traversal");
         let destination = case.join("extract");
         fs::create_dir_all(&destination).unwrap();
-        let archive = source_archive(&[("root/lib/../escaped.txt", b"pwned")]);
+        let archive = source_archive(&[("olive-src/lib/../escaped.txt", b"pwned")]);
 
         let result = extract_stdlib_archive(&archive, &destination);
 
@@ -444,7 +536,7 @@ mod tests {
         let case = test_case("link");
         let destination = case.join("extract");
         fs::create_dir_all(&destination).unwrap();
-        let archive = symlink_archive("root/lib/link", "/tmp/outside");
+        let archive = symlink_archive("olive-src/lib/link", "/tmp/outside");
 
         let result = extract_stdlib_archive(&archive, &destination);
 
@@ -459,8 +551,8 @@ mod tests {
         let destination = case.join("extract");
         fs::create_dir_all(&destination).unwrap();
         let archive = source_archive(&[
-            ("root/README.md", b"readme"),
-            ("root/lib/nested/value.txt", b"value"),
+            ("olive-src/README.md", b"readme"),
+            ("olive-src/lib/nested/value.txt", b"value"),
         ]);
 
         extract_stdlib_archive(&archive, &destination).unwrap();
@@ -470,6 +562,66 @@ mod tests {
             "value"
         );
         assert!(!destination.join("README.md").exists());
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn source_archive_rejects_wrong_root_and_empty_lib() {
+        let wrong_root = source_archive(&[("attacker/lib/value.txt", b"value")]);
+        let empty_lib = source_archive(&[("olive-src/README.md", b"readme")]);
+        for archive in [wrong_root, empty_lib] {
+            let case = test_case("invalid-root");
+            let destination = case.join("extract");
+            fs::create_dir_all(&destination).unwrap();
+            assert!(extract_stdlib_archive(&archive, &destination).is_err());
+            let _ = fs::remove_dir_all(&case);
+        }
+    }
+
+    #[test]
+    fn source_archive_ignores_links_outside_stdlib() {
+        let case = test_case("outside-link");
+        let destination = case.join("extract");
+        fs::create_dir_all(&destination).unwrap();
+        let archive = source_archive_with_outside_link();
+        extract_stdlib_archive(&archive, &destination).unwrap();
+        assert!(destination.join("value.txt").is_file());
+        assert!(!destination.join("link").exists());
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn source_archive_rejects_windows_special_components() {
+        let case = test_case("windows-component");
+        let destination = case.join("extract");
+        fs::create_dir_all(&destination).unwrap();
+        let archive = source_archive(&[("olive-src/lib/trailing. ", b"value")]);
+        assert!(extract_stdlib_archive(&archive, &destination).is_err());
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn source_archive_rejects_duplicate_lib_paths() {
+        let case = test_case("duplicate-lib");
+        let destination = case.join("extract");
+        fs::create_dir_all(&destination).unwrap();
+        let archive = source_archive(&[
+            ("olive-src/lib/value.txt", b"first"),
+            ("olive-src/lib/value.txt", b"second"),
+        ]);
+        assert!(extract_stdlib_archive(&archive, &destination).is_err());
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn source_archive_rejects_corrupt_gzip_trailer() {
+        let case = test_case("corrupt-gzip");
+        let destination = case.join("extract");
+        fs::create_dir_all(&destination).unwrap();
+        let mut archive = source_archive(&[("olive-src/lib/value.txt", b"value")]);
+        let last = archive.len() - 1;
+        archive[last] ^= 0xff;
+        assert!(extract_stdlib_archive(&archive, &destination).is_err());
         let _ = fs::remove_dir_all(&case);
     }
 

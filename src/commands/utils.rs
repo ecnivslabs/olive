@@ -43,6 +43,11 @@ pub fn load_config() -> Config {
                 process::exit(1);
             });
 
+            if let Err(error) = tooling::manifest::validate_pod_layout(&config, &current_dir) {
+                eprintln!("error: invalid pit.toml: {error}");
+                process::exit(1);
+            }
+
             if let Some(pod) = &config.pod
                 && let Some(req_str) = &pod.olive
             {
