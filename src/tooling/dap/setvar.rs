@@ -310,11 +310,18 @@ fn build_value(
             let AExpr::List(items) = expr else {
                 return Err(format!("expected a list literal for {ty}"));
             };
-            let ptr = call_alloc1(session, "olive_set_new", items.len() as i64)?;
+            let mut guard = PartialBuild::new(session, concrete_ty(ty).clone());
             for item in items {
                 let raw = build_value(session, frame_idx, elem_ty, item)?;
-                call_set_add(session, ptr, raw)?;
+                guard.pending.push((elem_ty.as_ref().clone(), raw));
             }
+            let ptr = call_alloc1(session, "olive_set_new", items.len() as i64)?;
+            guard.parent = ptr;
+            for _ in items {
+                call_set_add(session, ptr, guard.pending[0].1)?;
+                guard.pending.remove(0);
+            }
+            guard.committed = true;
             Ok(ptr)
         }
         Type::Tuple(item_tys) => {
@@ -328,28 +335,52 @@ fn build_value(
                     items.len()
                 ));
             }
-            let ptr = call_alloc1(session, "olive_list_new", items.len() as i64)?;
-            for (i, (item_ty, item)) in item_tys.iter().zip(items).enumerate() {
+            let mut guard = PartialBuild::new(session, concrete_ty(ty).clone());
+            for (item_ty, item) in item_tys.iter().zip(items) {
                 let raw = build_value(session, frame_idx, item_ty, item)?;
-                call_setter(session, "olive_debug_seq_set", ptr, i as i64, raw)?;
+                guard.pending.push((item_ty.clone(), raw));
             }
+            let ptr = call_alloc1(session, "olive_list_new", items.len() as i64)?;
+            guard.parent = ptr;
+            for i in 0..items.len() {
+                call_setter(
+                    session,
+                    "olive_debug_seq_set",
+                    ptr,
+                    i as i64,
+                    guard.pending[0].1,
+                )?;
+                guard.pending.remove(0);
+            }
+            guard.committed = true;
             Ok(ptr)
         }
         Type::Dict(key_ty, val_ty) => {
             let AExpr::Dict(pairs) = expr else {
                 return Err(format!("expected a dict literal for {ty}"));
             };
-            let ptr = call_alloc0(session, "olive_obj_new")?;
+            let mut guard = PartialBuild::new(session, concrete_ty(ty).clone());
             for (key_expr, val_expr) in pairs {
                 let kraw = build_value(session, frame_idx, key_ty, key_expr)?;
+                guard.pending.push((key_ty.as_ref().clone(), kraw));
                 let vraw = build_value(session, frame_idx, val_ty, val_expr)?;
+                guard.pending.push((val_ty.as_ref().clone(), vraw));
+            }
+            let ptr = call_alloc0(session, "olive_obj_new")?;
+            guard.parent = ptr;
+            for _ in pairs {
+                let kraw = guard.pending[0].1;
+                let vraw = guard.pending[1].1;
                 if needs_key_descriptor(key_ty) {
                     let desc = build_descriptor(session, key_ty);
                     obj_set_typed(session, ptr, kraw, vraw, &desc)?;
                 } else {
                     obj_set(session, ptr, kraw, vraw)?;
                 }
+                guard.pending.remove(0);
+                guard.pending.remove(0);
             }
+            guard.committed = true;
             Ok(ptr)
         }
         Type::Struct(name, _, _) => {
@@ -374,16 +405,23 @@ fn build_value(
             // A recycled slab slot isn't zeroed (`olive_struct_alloc` only
             // writes the header), so every field must be written -- the
             // `args.len() != fields.len()` check above guarantees that.
-            let ptr = call_alloc1(session, "olive_struct_alloc", fields.len() as i64)?;
-            for (i, (fname, arg)) in fields.iter().zip(args).enumerate() {
+            let mut guard = PartialBuild::new(session, concrete_ty(ty).clone());
+            for (fname, arg) in fields.iter().zip(args) {
                 let fty = session
                     .field_types()
                     .get(&(name.clone(), fname.clone()))
                     .cloned()
                     .unwrap_or(Type::Any);
                 let raw = build_value(session, frame_idx, &fty, arg)?;
-                unsafe { *(ptr as *mut i64).add(1 + i) = raw };
+                guard.pending.push((fty, raw));
             }
+            let ptr = call_alloc1(session, "olive_struct_alloc", fields.len() as i64)?;
+            guard.parent = ptr;
+            for (i, _) in fields.iter().enumerate() {
+                unsafe { *(ptr as *mut i64).add(1 + i) = guard.pending[0].1 };
+                guard.pending.remove(0);
+            }
+            guard.committed = true;
             Ok(ptr)
         }
         Type::Enum(name, _) => {
@@ -413,6 +451,11 @@ fn build_value(
             // The descriptor is only read during the call, so a host-side
             // pointer is fine (same trick as `obj_set_typed` above).
             let desc = session.intern_debug_descriptor(concrete_ty(ty))?;
+            let mut guard = PartialBuild::new(session, concrete_ty(ty).clone());
+            for (pty, arg) in payload_tys.iter().zip(args) {
+                let raw = build_value(session, frame_idx, pty, arg)?;
+                guard.pending.push((pty.clone(), raw));
+            }
             let ptr = call_alloc4(
                 session,
                 "olive_enum_new",
@@ -421,10 +464,18 @@ fn build_value(
                 payload_tys.len() as i64,
                 desc,
             )?;
-            for (i, (pty, arg)) in payload_tys.iter().zip(args).enumerate() {
-                let raw = build_value(session, frame_idx, pty, arg)?;
-                call_setter(session, "olive_debug_enum_set", ptr, i as i64, raw)?;
+            guard.parent = ptr;
+            for i in 0..args.len() {
+                call_setter(
+                    session,
+                    "olive_debug_enum_set",
+                    ptr,
+                    i as i64,
+                    guard.pending[0].1,
+                )?;
+                guard.pending.remove(0);
             }
+            guard.committed = true;
             Ok(ptr)
         }
         other => Err(format!("cannot construct a value of type {other}")),
@@ -437,11 +488,24 @@ fn build_seq(
     elem_ty: &Type,
     items: &[AExpr],
 ) -> Result<i64, String> {
-    let ptr = call_alloc1(session, "olive_list_new", items.len() as i64)?;
-    for (i, item) in items.iter().enumerate() {
+    let mut guard = PartialBuild::new(session, Type::List(Box::new(elem_ty.clone())));
+    for item in items {
         let raw = build_value(session, frame_idx, elem_ty, item)?;
-        call_setter(session, "olive_debug_seq_set", ptr, i as i64, raw)?;
+        guard.pending.push((elem_ty.clone(), raw));
     }
+    let ptr = call_alloc1(session, "olive_list_new", items.len() as i64)?;
+    guard.parent = ptr;
+    for (i, _) in items.iter().enumerate() {
+        call_setter(
+            session,
+            "olive_debug_seq_set",
+            ptr,
+            i as i64,
+            guard.pending[0].1,
+        )?;
+        guard.pending.remove(0);
+    }
+    guard.committed = true;
     Ok(ptr)
 }
 
@@ -706,6 +770,61 @@ fn call_set_add(session: &EngineShared, set_ptr: i64, raw: i64) -> Result<(), St
     let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(ptr) };
     f(set_ptr, raw);
     Ok(())
+}
+
+/// Frees a debugger-built value through its own type descriptor, used to
+/// roll back a partially-built aggregate when a later child fails: without
+/// this every failed `setVariable` leaks its parent shell plus all children
+/// built before the failure.
+fn free_built(session: &EngineShared, ty: &Type, raw: i64) {
+    if raw == 0 {
+        return;
+    }
+    let desc = build_descriptor(session, &concrete_ty(ty).clone());
+    let Some(ptr) = session.runtime_symbol("olive_free_typed") else {
+        return;
+    };
+    let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(ptr) };
+    f(raw, desc.as_ptr() as i64);
+}
+
+/// Owns the children of an aggregate under construction until each one is
+/// handed to the parent. If any child build or insert fails, dropping the
+/// guard frees the parent shell (which owns every already-inserted child)
+/// plus every child still pending, so a failed construction leaks nothing.
+/// On success the caller marks `committed`: the parent owns everything.
+struct PartialBuild<'a> {
+    session: &'a EngineShared,
+    parent_ty: Type,
+    parent: i64,
+    pending: Vec<(Type, i64)>,
+    committed: bool,
+}
+
+impl<'a> PartialBuild<'a> {
+    fn new(session: &'a EngineShared, parent_ty: Type) -> Self {
+        PartialBuild {
+            session,
+            parent_ty,
+            parent: 0,
+            pending: Vec::new(),
+            committed: false,
+        }
+    }
+}
+
+impl Drop for PartialBuild<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if self.parent != 0 {
+            free_built(self.session, &self.parent_ty, self.parent);
+        }
+        for (ty, raw) in std::mem::take(&mut self.pending) {
+            free_built(self.session, &ty, raw);
+        }
+    }
 }
 
 fn call_setter(

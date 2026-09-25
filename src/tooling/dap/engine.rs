@@ -153,7 +153,7 @@ const fn unpack_frame(frame_id: usize) -> (i64, usize) {
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
-const RUNTIME_SYM_NAMES: [&str; 23] = [
+const RUNTIME_SYM_NAMES: [&str; 24] = [
     "olive_format_typed",
     "olive_debug_seq_len",
     "olive_debug_seq_get",
@@ -180,6 +180,9 @@ const RUNTIME_SYM_NAMES: [&str; 23] = [
     "olive_enum_new",
     "olive_set_new",
     "olive_set_add",
+    // Rollback for partially-built `setVariable` aggregates (`setvar.rs`):
+    // frees a value through its own type descriptor.
+    "olive_free_typed",
     // Async-stack reconstruction: the executor's own await graph, read to
     // walk from a stopped `async fn` frame up through the suspended frames
     // parked awaiting it (`EngineShared::async_parents`).

@@ -430,6 +430,48 @@ fn set_variable_replaces_a_whole_list_with_a_fresh_one() {
 }
 
 #[test]
+fn set_variable_failed_construction_leaves_original_intact() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn main():\n    let xs = [\"a\", \"b\"]\n    print(xs)\n";
+    let path = write_program(src, "rollback");
+    launch_program(&mut session, &path);
+    set_breakpoints(&mut session, &path, &[json!({"line": 3})]);
+    configuration_done(&mut session);
+    let stopped = session.read_event("stopped");
+    assert_eq!(stopped["body"]["reason"], "breakpoint");
+
+    let seq = session.request("stackTrace", json!({"threadId": 1}));
+    let resp = session.read_response(seq);
+    let frame_id = resp["body"]["stackFrames"][0]["id"].as_i64().unwrap();
+    let scope = scope_ref(&mut session, frame_id);
+
+    // Second element is not a string: construction must fail without
+    // leaking the already-built first element or touching `xs`.
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "xs", "value": "[\"ok\", 5]"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], false, "bad construction must fail: {resp}");
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+
+    let stdout = session.stdout_so_far();
+    assert!(
+        stdout.contains("[\"a\", \"b\"]"),
+        "stdout so far: {stdout:?}"
+    );
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn set_variable_replaces_a_whole_struct_and_dict() {
     let mut session = Session::start();
     handshake(&mut session);
