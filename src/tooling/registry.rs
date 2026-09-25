@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 const DEFAULT_REGISTRY: &str = "https://raw.githubusercontent.com/ecnivslabs/pit-registry/master";
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CACHE_BYTES: usize = MAX_REGISTRY_BYTES * 6 + MAX_URL_BYTES + 128;
 const MAX_URL_BYTES: usize = 8 * 1024;
 const MAX_CHECKSUM_BYTES: usize = 64;
-const MAX_FIELD_BYTES: usize = 4096;
 
 pub(crate) fn validate_checksum(value: &str, label: &str) -> Result<(), String> {
     if value.len() != MAX_CHECKSUM_BYTES || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -59,15 +59,6 @@ pub(crate) fn validate_http_url(value: &str, label: &str) -> Result<reqwest::Url
         ));
     }
     Ok(url)
-}
-
-pub(crate) fn validate_field(value: &str, label: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > MAX_FIELD_BYTES || value.chars().any(char::is_control) {
-        return Err(format!(
-            "invalid {label}: value has an invalid length or control character"
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -254,6 +245,8 @@ pub(crate) fn validate_pod_coordinates(name: &str, version: &str) -> Result<(), 
 fn validate_pod_version(version: &PodVersion) -> Result<(), String> {
     validate_pod_name(&version.name)?;
     validate_version(&version.vers)?;
+    validate_checksum(&version.cksum, "pod archive checksum")?;
+    validate_http_url(&version.dl, "pod archive URL")?;
     for dependency in &version.deps {
         validate_pod_name(&dependency.name)?;
     }
@@ -261,8 +254,12 @@ fn validate_pod_version(version: &PodVersion) -> Result<(), String> {
         validate_filename(&native.lib)?;
         for artifact in native.artifacts.values() {
             validate_filename(&artifact.file)?;
+            validate_checksum(&artifact.cksum, "native artifact checksum")?;
+            validate_http_url(&artifact.url, "native artifact URL")?;
             if let Some(import_library) = &artifact.implib {
                 validate_filename(&import_library.file)?;
+                validate_checksum(&import_library.cksum, "native import library checksum")?;
+                validate_http_url(&import_library.url, "native import library URL")?;
             }
         }
     }
@@ -298,12 +295,13 @@ fn legacy_cache_path(name: &str) -> PathBuf {
 fn read_cached(name: &str) -> Result<String, String> {
     let path = cache_path(name);
     let expected = get_registry_base()?;
-    let content = match fs::read(&path) {
+    let content = match read_bounded_file(&path, MAX_CACHE_BYTES, "registry cache") {
         Ok(content) => content,
         Err(error) => {
             let legacy = legacy_cache_path(name);
-            let legacy_content = fs::read(&legacy)
-                .map_err(|_| format!("cache read failed for '{}': {error}", path.display()))?;
+            let legacy_content =
+                read_bounded_file(&legacy, MAX_REGISTRY_BYTES, "legacy registry cache")
+                    .map_err(|_| format!("cache read failed for '{}': {error}", path.display()))?;
             if expected != DEFAULT_REGISTRY {
                 return Err(format!(
                     "legacy registry cache for '{name}' has no registry identity"
@@ -315,7 +313,10 @@ fn read_cached(name: &str) -> Result<String, String> {
     };
     let cache: RegistryCache = serde_json::from_slice(&content)
         .map_err(|error| format!("invalid registry cache {}: {error}", path.display()))?;
-    validate_field(&cache.registry, "registry identity")?;
+    validate_http_url(&cache.registry, "registry identity")?;
+    if cache.body.len() > MAX_REGISTRY_BYTES {
+        return Err(format!("registry cache for '{name}' exceeds 4 MiB"));
+    }
     if cache.registry != expected {
         return Err(format!(
             "registry cache for '{name}' belongs to {}, not {expected}",
@@ -500,11 +501,14 @@ mod tests {
         v
     }
 
+    fn valid_registry_line(name: &str, vers: &str) -> String {
+        let checksum = blake3::hash(b"archive").to_hex().to_string();
+        serde_json::to_string(&make_version(name, vers, &checksum, false)).unwrap()
+    }
+
     #[test]
     fn parse_versions_single_line() {
-        let line =
-            r#"{"name":"test","vers":"1.0.0","cksum":"abc","dl":"https://e.com/t","yanked":false}"#;
-        let versions = parse_versions(line).unwrap();
+        let versions = parse_versions(&valid_registry_line("test", "1.0.0")).unwrap();
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].name, "test");
         assert_eq!(versions[0].vers, "1.0.0");
@@ -512,9 +516,12 @@ mod tests {
 
     #[test]
     fn parse_versions_multiple_lines() {
-        let data = r#"{"name":"a","vers":"1.0.0","cksum":"abc","dl":"","yanked":false}
-{"name":"b","vers":"2.0.0","cksum":"def","dl":"","yanked":false}"#;
-        let versions = parse_versions(data).unwrap();
+        let data = format!(
+            "{}\n{}",
+            valid_registry_line("a", "1.0.0"),
+            valid_registry_line("b", "2.0.0")
+        );
+        let versions = parse_versions(&data).unwrap();
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].name, "a");
         assert_eq!(versions[1].name, "b");
@@ -522,10 +529,12 @@ mod tests {
 
     #[test]
     fn parse_versions_skips_empty_lines() {
-        let data = r#"{"name":"a","vers":"1.0.0","cksum":"abc","dl":"","yanked":false}
-
-{"name":"b","vers":"2.0.0","cksum":"def","dl":"","yanked":false}"#;
-        let versions = parse_versions(data).unwrap();
+        let data = format!(
+            "{}\n\n{}",
+            valid_registry_line("a", "1.0.0"),
+            valid_registry_line("b", "2.0.0")
+        );
+        let versions = parse_versions(&data).unwrap();
         assert_eq!(versions.len(), 2);
     }
 
@@ -545,6 +554,51 @@ mod tests {
     fn parse_versions_invalid_json() {
         let result = parse_versions("not valid json");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_versions_rejects_invalid_artifact_urls_and_checksums() {
+        let mut pod: PodVersion =
+            serde_json::from_str(&valid_registry_line("test", "1.0.0")).unwrap();
+        pod.dl = "http://example.com/archive.pit.zst".to_string();
+        assert!(validate_pod_version(&pod).is_err());
+        pod.dl = "https://example.com/archive.pit.zst".to_string();
+        pod.cksum = "bad".to_string();
+        assert!(validate_pod_version(&pod).is_err());
+        pod.cksum = blake3::hash(b"archive").to_hex().to_string();
+        pod.native = Some(NativeSpec {
+            lib: "test".to_string(),
+            artifacts: BTreeMap::from([(
+                "linux-x86_64".to_string(),
+                NativeArtifact {
+                    file: "libtest.so".to_string(),
+                    url: "http://example.com/libtest.so".to_string(),
+                    cksum: pod.cksum.clone(),
+                    implib: None,
+                },
+            )]),
+        });
+        assert!(validate_pod_version(&pod).is_err());
+        pod.native
+            .as_mut()
+            .unwrap()
+            .artifacts
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .url = "https://example.com/libtest.so".to_string();
+        assert!(validate_pod_version(&pod).is_ok());
+    }
+
+    #[test]
+    fn bounded_cache_read_rejects_oversized_file() {
+        let path = std::env::temp_dir().join(format!(
+            "olive-registry-cache-limit-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::write(&path, vec![b'x'; 1025]).unwrap();
+        assert!(read_bounded_file(&path, 1024, "registry cache").is_err());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

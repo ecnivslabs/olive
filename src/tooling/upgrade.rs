@@ -248,6 +248,171 @@ fn extract_stdlib_archive(source: &[u8], destination: &Path) -> Result<(), Strin
     Ok(())
 }
 
+struct InstalledAsset {
+    destination: PathBuf,
+    backup: Option<PathBuf>,
+}
+
+fn staging_path(destination: &Path) -> Result<PathBuf, String> {
+    static NEXT_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = destination
+        .file_name()
+        .expect("release asset path has a filename")
+        .to_os_string();
+    let directory = destination
+        .parent()
+        .expect("release asset path has a parent");
+    loop {
+        let sequence = NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut candidate_name = name.clone();
+        candidate_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
+        let candidate = directory.join(candidate_name);
+        match fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect staging path {}: {error}",
+                    candidate.display()
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
+struct StagingCleanup(Vec<PathBuf>);
+
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            match fs::symlink_metadata(path) {
+                Ok(_) => {
+                    if let Err(error) = remove_asset(path) {
+                        eprintln!("Could not remove staging path {}: {error}", path.display());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    eprintln!("Could not inspect staging path {}: {error}", path.display());
+                }
+            }
+        }
+    }
+}
+
+fn remove_asset(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn backup_path(destination: &Path) -> Result<PathBuf, String> {
+    static NEXT_BACKUP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    loop {
+        let sequence = NEXT_BACKUP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let extension = format!("old-{}-{sequence}", std::process::id());
+        let candidate = destination.with_extension(extension);
+        match fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect backup path {}: {error}",
+                    candidate.display()
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
+fn restore_asset(asset: &InstalledAsset) -> Result<(), String> {
+    remove_asset(&asset.destination).map_err(|error| {
+        format!(
+            "could not remove replacement {}: {error}",
+            asset.destination.display()
+        )
+    })?;
+    if let Some(backup) = &asset.backup {
+        fs::rename(backup, &asset.destination).map_err(|error| {
+            format!(
+                "could not restore {} from {}: {error}",
+                asset.destination.display(),
+                backup.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn install_asset(staged: &Path, destination: &Path) -> Result<InstalledAsset, String> {
+    let destination_exists = match fs::symlink_metadata(destination) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(format!(
+                "could not inspect {}: {error}",
+                destination.display()
+            ));
+        }
+    };
+    let backup = if destination_exists {
+        let backup = backup_path(destination)?;
+        fs::rename(destination, &backup)
+            .map_err(|error| format!("could not move {} aside: {error}", destination.display()))?;
+        Some(backup)
+    } else {
+        None
+    };
+    if let Err(error) = fs::rename(staged, destination) {
+        let restore_error = backup
+            .as_ref()
+            .and_then(|path| fs::rename(path, destination).err());
+        let mut message = format!("could not install {}: {error}", destination.display());
+        if let Some(restore_error) = restore_error {
+            message.push_str(&format!("; could not restore old asset: {restore_error}"));
+        }
+        return Err(message);
+    }
+    Ok(InstalledAsset {
+        destination: destination.to_path_buf(),
+        backup,
+    })
+}
+
+fn install_assets(assets: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut installed = Vec::with_capacity(assets.len());
+    for (staged, destination) in assets {
+        match install_asset(staged, destination) {
+            Ok(asset) => installed.push(asset),
+            Err(mut message) => {
+                let failures: Vec<String> = installed
+                    .iter()
+                    .rev()
+                    .filter_map(|asset| restore_asset(asset).err())
+                    .collect();
+                if !failures.is_empty() {
+                    message.push_str(&format!("; rollback failed: {}", failures.join("; ")));
+                }
+                return Err(message);
+            }
+        }
+    }
+    for asset in installed {
+        if let Some(backup) = asset.backup
+            && let Err(error) = remove_asset(&backup)
+        {
+            eprintln!(
+                "Upgrade completed, but could not remove backup {}: {error}",
+                backup.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn upgrade() -> Result<(), String> {
     let artifact =
         target_triple().ok_or_else(|| "no prebuilt binary for this platform".to_string())?;
@@ -331,7 +496,9 @@ pub fn upgrade() -> Result<(), String> {
     let current_exe =
         env::current_exe().map_err(|e| format!("could not find current executable: {}", e))?;
 
-    let tmp_path = current_exe.with_extension("tmp");
+    let mut staging_cleanup = StagingCleanup(Vec::new());
+    let tmp_path = staging_path(&current_exe)?;
+    staging_cleanup.0.push(tmp_path.clone());
     fs::write(&tmp_path, &bin_buf).map_err(|e| format!("could not write temporary file: {}", e))?;
 
     #[cfg(unix)]
@@ -353,79 +520,40 @@ pub fn upgrade() -> Result<(), String> {
     fs::create_dir_all(&lib_dir).map_err(|e| format!("could not create lib directory: {}", e))?;
 
     let lib_path = lib_dir.join(&lib_file);
-    let lib_tmp = lib_path.with_extension("tmp");
+    let lib_tmp = staging_path(&lib_path)?;
+    staging_cleanup.0.push(lib_tmp.clone());
     fs::write(&lib_tmp, &lib_buf).map_err(|e| format!("could not write lib tmp file: {}", e))?;
 
     let static_tmp = static_file
         .as_ref()
-        .map(|file| lib_dir.join(file).with_extension("tmp"));
+        .map(|file| staging_path(&lib_dir.join(file)))
+        .transpose()?;
+    if let Some(path) = &static_tmp {
+        staging_cleanup.0.push(path.clone());
+    }
     if let (Some(path), Some(buf)) = (&static_tmp, &static_buf) {
         fs::write(path, buf).map_err(|e| format!("could not write static lib tmp file: {}", e))?;
     }
 
-    let stdlib_tmp_dir = stdlib_src_dir.with_extension("tmp");
-    let _ = fs::remove_dir_all(&stdlib_tmp_dir);
+    let stdlib_tmp_dir = staging_path(&stdlib_src_dir)?;
+    staging_cleanup.0.push(stdlib_tmp_dir.clone());
     fs::create_dir_all(&stdlib_tmp_dir)
         .map_err(|e| format!("could not create stdlib tmp dir: {}", e))?;
 
-    if let Err(error) = extract_stdlib_archive(&source_buf, &stdlib_tmp_dir) {
-        let _ = fs::remove_dir_all(&stdlib_tmp_dir);
-        return Err(error);
-    }
+    extract_stdlib_archive(&source_buf, &stdlib_tmp_dir)?;
 
-    let old_stdlib_dir = stdlib_src_dir.with_extension("old");
-    let _ = fs::remove_dir_all(&old_stdlib_dir);
-    if stdlib_src_dir.exists() {
-        fs::rename(&stdlib_src_dir, &old_stdlib_dir)
-            .map_err(|e| format!("could not move old stdlib dir: {}", e))?;
+    let mut assets = vec![
+        (stdlib_tmp_dir, stdlib_src_dir),
+        (lib_tmp, lib_path.clone()),
+    ];
+    if let (Some(static_tmp), Some(static_path)) = (
+        static_tmp,
+        static_file.as_ref().map(|file| lib_dir.join(file)),
+    ) {
+        assets.push((static_tmp, static_path));
     }
-    fs::rename(&stdlib_tmp_dir, &stdlib_src_dir).map_err(|e| {
-        let _ = fs::rename(&old_stdlib_dir, &stdlib_src_dir);
-        format!("could not swap stdlib dir: {}", e)
-    })?;
-
-    let old_lib_path = lib_path.with_extension("old");
-    let _ = fs::remove_file(&old_lib_path);
-    if lib_path.exists() {
-        fs::rename(&lib_path, &old_lib_path)
-            .map_err(|e| format!("could not move old lib file: {}", e))?;
-    }
-    fs::rename(&lib_tmp, &lib_path).map_err(|e| {
-        let _ = fs::rename(&old_lib_path, &lib_path);
-        format!("could not swap lib file: {}", e)
-    })?;
-
-    if let Some(static_path) = static_file.as_ref().map(|file| lib_dir.join(file)) {
-        let old_static_path = static_path.with_extension("old");
-        let _ = fs::remove_file(&old_static_path);
-        if static_path.exists()
-            && let Err(e) = fs::rename(&static_path, &old_static_path)
-        {
-            return Err(format!("could not move old static lib file: {}", e));
-        }
-        let static_tmp_path = static_path.with_extension("tmp");
-        if let Err(e) = fs::rename(&static_tmp_path, &static_path) {
-            let _ = fs::rename(&old_static_path, &static_path);
-            let _ = fs::rename(&old_lib_path, &lib_path);
-            let _ = fs::rename(&old_stdlib_dir, &stdlib_src_dir);
-            return Err(format!("could not swap static lib file: {}", e));
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        let old_exe = current_exe.with_extension("old");
-        let _ = fs::remove_file(&old_exe);
-        fs::rename(&current_exe, &old_exe)
-            .map_err(|e| format!("could not move current binary: {}", e))?;
-    }
-    fs::rename(&tmp_path, &current_exe).map_err(|e| format!("could not replace binary: {}", e))?;
-
-    let _ = fs::remove_dir_all(&old_stdlib_dir);
-    let _ = fs::remove_file(&old_lib_path);
-    if let Some(static_path) = static_file.as_ref().map(|file| lib_dir.join(file)) {
-        let _ = fs::remove_file(static_path.with_extension("old"));
-    }
+    assets.push((tmp_path, current_exe.clone()));
+    install_assets(&assets)?;
 
     // Clean up legacy/shadowing library in bin directory if present
     let bin_lib_path = install_dir.join(lib_file);
@@ -515,6 +643,88 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn failed_asset_swap_restores_previous_installation() {
+        let case = test_case("rollback");
+        let old_sources = case.join("sources");
+        let staged_sources = case.join("staged-sources");
+        fs::create_dir_all(&old_sources).unwrap();
+        fs::create_dir_all(&staged_sources).unwrap();
+        fs::write(old_sources.join("value"), "old").unwrap();
+        fs::write(staged_sources.join("value"), "new").unwrap();
+        let library = case.join("library");
+        fs::write(&library, "old library").unwrap();
+
+        let result = install_assets(&[
+            (staged_sources, old_sources.clone()),
+            (case.join("missing-library"), library.clone()),
+        ]);
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(old_sources.join("value")).unwrap(),
+            "old"
+        );
+        assert_eq!(fs::read_to_string(&library).unwrap(), "old library");
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn successful_asset_swap_removes_backups() {
+        let case = test_case("swap");
+        let old = case.join("library");
+        let staged = case.join("staged-library");
+        fs::write(&old, "old").unwrap();
+        fs::write(&staged, "new").unwrap();
+
+        install_assets(&[(staged, old.clone())]).unwrap();
+
+        assert_eq!(fs::read_to_string(&old).unwrap(), "new");
+        assert_eq!(fs::read_dir(&case).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn windows_library_staging_paths_are_distinct() {
+        let directory = Path::new("lib");
+        let dynamic = staging_path(&directory.join("olive_std.dll")).unwrap();
+        let static_library = staging_path(&directory.join("olive_std.lib")).unwrap();
+        assert_ne!(dynamic, static_library);
+        assert!(
+            dynamic
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("olive_std.dll.tmp-")
+        );
+        assert!(
+            static_library
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("olive_std.lib.tmp-")
+        );
+    }
+
+    #[test]
+    fn staging_cleanup_removes_unconsumed_assets() {
+        let case = test_case("staging-cleanup");
+        let staged_file = staging_path(&case.join("binary")).unwrap();
+        let staged_dir = staging_path(&case.join("sources")).unwrap();
+        fs::write(&staged_file, "binary").unwrap();
+        fs::create_dir_all(&staged_dir).unwrap();
+        fs::write(staged_dir.join("source"), "source").unwrap();
+
+        drop(StagingCleanup(vec![
+            staged_file.clone(),
+            staged_dir.clone(),
+        ]));
+
+        assert!(!staged_file.exists());
+        assert!(!staged_dir.exists());
+        let _ = fs::remove_dir_all(&case);
     }
 
     #[test]

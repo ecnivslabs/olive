@@ -26,6 +26,53 @@ fn scalar_typed_key_never_frees_string_shaped_bits() {
 }
 
 #[test]
+fn owned_dict_insert_releases_transient_keys_and_replaced_values() {
+    #[repr(align(8))]
+    struct Aligned<const N: usize>([u8; N]);
+    let string_desc = Aligned([format::D_STR]);
+    let dict_desc = Aligned([format::D_DICT, format::D_STR, format::D_STR]);
+    let desc = string_desc.0.as_ptr() as i64;
+    let dict = olive_obj_new();
+    let key1 = s("same");
+    let value1 = s("first");
+    let key1_gen = string_slab::olive_str_gen_of(key1);
+    let value1_gen = string_slab::olive_str_gen_of(value1);
+    obj::olive_obj_set_owned_typed(dict, key1, value1, desc, desc);
+    assert_eq!(string_slab::olive_str_gen_stale(key1, key1_gen), 1);
+
+    let key2 = s("same");
+    let value2 = s("second");
+    let key2_gen = string_slab::olive_str_gen_of(key2);
+    obj::olive_obj_set_owned_typed(dict, key2, value2, desc, desc);
+    assert_eq!(string_slab::olive_str_gen_stale(key2, key2_gen), 1);
+    assert_eq!(string_slab::olive_str_gen_stale(value1, value1_gen), 1);
+    let lookup = s("same");
+    assert_eq!(from_ptr(obj::olive_obj_get(dict, lookup)), "second");
+    olive_free_str(lookup);
+    free_typed::olive_free_typed(dict, dict_desc.0.as_ptr() as i64);
+}
+
+#[test]
+fn typed_set_add_releases_duplicate_string() {
+    #[repr(align(8))]
+    struct Aligned([u8; 1]);
+    let desc = Aligned([format::D_STR]);
+    let set = olive_set_new(2);
+    let first = s("same");
+    let duplicate = s("same");
+    let duplicate_gen = string_slab::olive_str_gen_of(duplicate);
+    hash_typed::olive_set_add_typed(set, first, desc.0.as_ptr() as i64);
+    hash_typed::olive_set_add_typed(set, duplicate, desc.0.as_ptr() as i64);
+    assert_eq!(olive_list_len(set), 1);
+    assert_eq!(
+        string_slab::olive_str_gen_stale(duplicate, duplicate_gen),
+        1
+    );
+    let set_desc = [format::D_SET, format::D_STR];
+    free_typed::olive_free_typed(set, set_desc.as_ptr() as i64);
+}
+
+#[test]
 fn str_trim() {
     assert_eq!(from_ptr(olive_str_trim(s("  hello  "))), "hello");
     assert_eq!(from_ptr(olive_str_trim(s("no spaces"))), "no spaces");

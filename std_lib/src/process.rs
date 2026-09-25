@@ -622,7 +622,8 @@ fn drain_pipe(snap: &PipeSnapshot) -> String {
             *shared.get_or_insert_with(|| Instant::now() + Duration::from_secs(1))
         };
         snap.buf.wait_after_exit(&snap.done, deadline);
-        snap.buf.take_text(&snap.done, true)
+        snap.buf
+            .take_text(&snap.done, snap.done.load(Ordering::Acquire) != 0)
     } else {
         snap.buf.wait_for_data(&snap.done);
         snap.buf.take_text(&snap.done, false)
@@ -973,6 +974,32 @@ mod tests {
         buf.push(&[0x82, 0xac]);
         done.store(1, Ordering::SeqCst);
         assert_eq!(buf.take_text(&done, true), "€");
+    }
+
+    #[test]
+    fn exited_child_preserves_utf8_fragment_while_reader_is_active() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--help")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        let child = Arc::new(ChildShared::new(child));
+        child.exit_code.store(0, Ordering::Release);
+        let buf = PipeBuf::new();
+        let done = Arc::new(AtomicU32::new(0));
+        let snap = PipeSnapshot {
+            child,
+            buf: buf.clone(),
+            done: done.clone(),
+            drain_deadline: Arc::new(Mutex::new(Some(Instant::now()))),
+        };
+        buf.push(&[b'a', 0xe2]);
+        assert_eq!(drain_pipe(&snap), "a");
+        buf.push(&[0x82, 0xac]);
+        done.store(1, Ordering::Release);
+        assert_eq!(drain_pipe(&snap), "€");
     }
 
     #[test]

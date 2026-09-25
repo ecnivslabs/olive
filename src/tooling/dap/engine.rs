@@ -153,7 +153,7 @@ const fn unpack_frame(frame_id: usize) -> (i64, usize) {
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
-const RUNTIME_SYM_NAMES: [&str; 24] = [
+const RUNTIME_SYM_NAMES: [&str; 25] = [
     "olive_format_typed",
     "olive_debug_seq_len",
     "olive_debug_seq_get",
@@ -163,6 +163,8 @@ const RUNTIME_SYM_NAMES: [&str; 24] = [
     "olive_debug_enum_tag",
     "olive_debug_enum_payload",
     "olive_debug_str_bytes",
+    "olive_debug_any_decode",
+    "olive_debug_any_encode",
     "olive_debug_seq_set",
     "olive_debug_dict_set",
     "olive_debug_enum_set",
@@ -174,12 +176,11 @@ const RUNTIME_SYM_NAMES: [&str; 24] = [
     // by direct linkage.
     "olive_list_new",
     "olive_obj_new",
-    "olive_obj_set",
-    "olive_obj_set_typed",
+    "olive_obj_set_owned_typed",
     "olive_struct_alloc",
     "olive_enum_new",
     "olive_set_new",
-    "olive_set_add",
+    "olive_set_add_typed",
     // Rollback for partially-built `setVariable` aggregates (`setvar.rs`):
     // frees a value through its own type descriptor.
     "olive_free_typed",

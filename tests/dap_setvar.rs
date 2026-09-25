@@ -348,6 +348,114 @@ fn set_variable_on_f32_local_round_trips_and_resumes_cleanly() {
     std::fs::remove_file(&path).ok();
 }
 
+#[test]
+fn set_variable_accepts_full_u64_range() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn main():\n    let mut n: u64 = 1\n    print(n)\n";
+    let path = write_program(src, "u64_range");
+    launch_program(&mut session, &path);
+    set_breakpoints(&mut session, &path, &[json!({"line": 3})]);
+    configuration_done(&mut session);
+    session.read_event("stopped");
+
+    let seq = session.request("stackTrace", json!({"threadId": 1}));
+    let resp = session.read_response(seq);
+    let frame_id = resp["body"]["stackFrames"][0]["id"].as_i64().unwrap();
+    let scope = scope_ref(&mut session, frame_id);
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "n", "value": "18446744073709551615"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], true, "setVariable failed: {resp}");
+    assert_eq!(resp["body"]["value"], "18446744073709551615");
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+    assert!(session.stdout_so_far().contains("18446744073709551615"));
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn set_variable_rejects_values_outside_union_members() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn main():\n    let mut x: int | bool = 1\n    print(x)\n";
+    let path = write_program(src, "union_members");
+    launch_program(&mut session, &path);
+    set_breakpoints(&mut session, &path, &[json!({"line": 3})]);
+    configuration_done(&mut session);
+    session.read_event("stopped");
+
+    let seq = session.request("stackTrace", json!({"threadId": 1}));
+    let resp = session.read_response(seq);
+    let frame_id = resp["body"]["stackFrames"][0]["id"].as_i64().unwrap();
+    let scope = scope_ref(&mut session, frame_id);
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "x", "value": "None"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], false, "None is not a union member: {resp}");
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "x", "value": "true"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], true, "bool member rejected: {resp}");
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn set_variable_builds_a_typed_set_with_unique_elements() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn main():\n    let mut s: set[str] = {\"old\"}\n    print(len(s))\n";
+    let path = write_program(src, "typed_set");
+    launch_program(&mut session, &path);
+    set_breakpoints(&mut session, &path, &[json!({"line": 3})]);
+    configuration_done(&mut session);
+    session.read_event("stopped");
+
+    let seq = session.request("stackTrace", json!({"threadId": 1}));
+    let resp = session.read_response(seq);
+    let frame_id = resp["body"]["stackFrames"][0]["id"].as_i64().unwrap();
+    let scope = scope_ref(&mut session, frame_id);
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "s", "value": "[\"x\", \"x\"]"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], true, "set replacement failed: {resp}");
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+    assert!(session.stdout_so_far().contains('1'));
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
 /// A frame that isn't the topmost one is honestly rejected, not silently
 /// accepted and then lost: `write_value` refuses any `frame_idx != 0`.
 #[test]

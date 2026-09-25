@@ -4,6 +4,8 @@ const POLL_PENDING: i64 = i64::MIN;
 
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(test)]
+mod pin_tests;
 
 use crate::StableVec;
 use std::collections::VecDeque;
@@ -200,6 +202,15 @@ fn install_pending_child(parent: &Arc<OliveTask>, child: &Arc<OliveTask>) {
     }
 }
 
+fn restore_pending_child(parent: &Arc<OliveTask>, child: Arc<OliveTask>) -> bool {
+    let mut slot = parent.pending_child.lock().unwrap();
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(child);
+    true
+}
+
 fn release_child_pin(ex: &OliveExecutor, child: &Arc<OliveTask>) {
     if child.handle_pins.fetch_sub(1, Ordering::AcqRel) == 1 {
         maybe_remove_retired_task(ex, child);
@@ -305,8 +316,7 @@ fn executor_complete_waker(
     let Some(_poll_guard) = try_acquire_sm_poll(task.sm_future) else {
         // Mid-poll elsewhere; restore and let that poll's worker pick it up
         // on its next dequeue.
-        install_pending_child(task, &completed_child);
-        return false;
+        return !restore_pending_child(task, completed_child);
     };
 
     if task_cancelled(task) {
@@ -375,10 +385,6 @@ fn park_combinator_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, child_p
                 return false;
             };
             if child.done.load(Ordering::Acquire) {
-                return false;
-            }
-            if child.pending_child.lock().unwrap().take().is_some() {
-                install_pending_child(task, &child);
                 return false;
             }
             let mut waiters = child.sm_waiters.lock().unwrap();
@@ -468,11 +474,6 @@ fn park_after_pending(
             let Some(sub_task) = executor_get_or_create_active_task(ex, sub_future) else {
                 return DriveOutcome::Rerun;
             };
-            // Already finished but its wakeup has not been consumed yet.
-            if sub_task.pending_child.lock().unwrap().take().is_some() {
-                install_pending_child(task, &sub_task);
-                return DriveOutcome::Rerun;
-            }
             // Check-and-push under the waiters lock, mirrored by the done
             // store inside the same lock in `executor_complete`: checking
             // done outside that lock races completion's take and the waiter

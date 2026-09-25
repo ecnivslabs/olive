@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
 
 enum ChildState {
     Pending,
-    Delivered,
     Done,
     Registered,
 }
@@ -45,7 +44,6 @@ fn check_child_lifetime(state: ChildState) {
     let weak_parent = Arc::downgrade(&parent);
     match state {
         ChildState::Pending => {}
-        ChildState::Delivered => *child.pending_child.lock().unwrap() = Some(child.clone()),
         ChildState::Done => child.done.store(true, Ordering::SeqCst),
         ChildState::Registered => child.sm_waiters.lock().unwrap().push(parent.clone()),
     }
@@ -63,13 +61,6 @@ fn check_child_lifetime(state: ChildState) {
             ));
             assert!(!ex.task_map.lock().unwrap().contains_key(&child.sm_future));
         }
-        ChildState::Delivered => {
-            assert!(outcome == DriveOutcome::Rerun);
-            assert!(Arc::ptr_eq(
-                parent.pending_child.lock().unwrap().as_ref().unwrap(),
-                &child
-            ));
-        }
         ChildState::Done | ChildState::Registered => {
             assert!(outcome == DriveOutcome::Rerun);
         }
@@ -84,11 +75,6 @@ fn check_child_lifetime(state: ChildState) {
 #[test]
 fn completed_child_releases_waiter_references() {
     check_child_lifetime(ChildState::Pending);
-}
-
-#[test]
-fn delivered_child_releases_temporary_reference() {
-    check_child_lifetime(ChildState::Delivered);
 }
 
 #[test]

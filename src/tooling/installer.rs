@@ -314,7 +314,7 @@ async fn download_and_verify(
     }
 
     let cksum = hasher.finalize().to_hex().to_string();
-    if cksum != expected_cksum {
+    if !crate::tooling::registry::checksums_equal(&cksum, expected_cksum) {
         return Err(InstallError::Checksum(format!(
             "expected {expected_cksum}, got {cksum} for {url}"
         )));
@@ -348,9 +348,66 @@ fn write_file_atomic(dir: &Path, filename: &str, data: &[u8]) -> Result<(), Inst
 }
 
 fn installed_archive_matches(dir: &Path, pod: &PodVersion) -> bool {
-    fs::read_to_string(dir.join(INSTALL_CHECKSUM_MARKER))
-        .is_ok_and(|checksum| checksum.trim() == pod.cksum)
-        && dir.join("pit.toml").is_file()
+    fs::read_to_string(dir.join(INSTALL_CHECKSUM_MARKER)).is_ok_and(|checksum| {
+        crate::tooling::registry::checksums_equal(checksum.trim(), &pod.cksum)
+    }) && dir.join("pit.toml").is_file()
+}
+
+fn replace_pod_dir(staged: &Path, destination: &Path) -> Result<(), InstallError> {
+    let existing = match fs::symlink_metadata(destination) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(InstallError::Io(error)),
+    };
+    if !existing {
+        return fs::rename(staged, destination).map_err(InstallError::Io);
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| InstallError::Extraction("installed pod path has no parent".to_string()))?;
+    let mut backup_dir = None;
+    for _ in 0..16 {
+        let candidate = parent.join(format!(".backup-{:x}", rand::random::<u64>()));
+        match fs::create_dir(&candidate) {
+            Ok(()) => {
+                backup_dir = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(InstallError::Io(error)),
+        }
+    }
+    let backup_dir = backup_dir.ok_or_else(|| {
+        InstallError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique pod backup directory",
+        ))
+    })?;
+    let backup = backup_dir.join("old");
+    if let Err(error) = fs::rename(destination, &backup) {
+        let _ = fs::remove_dir(&backup_dir);
+        return Err(InstallError::Io(error));
+    }
+    if let Err(error) = fs::rename(staged, destination) {
+        let restore = fs::rename(&backup, destination);
+        if restore.is_ok() {
+            let _ = fs::remove_dir(&backup_dir);
+            return Err(InstallError::Io(error));
+        }
+        return Err(InstallError::Extraction(format!(
+            "could not install replacement pod: {error}; could not restore previous pod from {}: {}",
+            backup.display(),
+            restore.unwrap_err()
+        )));
+    }
+    if let Err(error) = fs::remove_dir_all(&backup_dir) {
+        eprintln!(
+            "Installed pod, but could not remove backup {}: {error}",
+            backup_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Downloads this pod's native library (and MSVC import library, if any) for
@@ -381,7 +438,7 @@ async fn fetch_native_into(
 
     if let Some(locked) = locked
         && let Some(expected) = locked.get(key)
-        && *expected != artifact.cksum
+        && !crate::tooling::registry::checksums_equal(expected, &artifact.cksum)
     {
         return Err(InstallError::LockMismatch {
             pod: pod_name.to_string(),
@@ -394,7 +451,7 @@ async fn fetch_native_into(
 
     if let Some(implib) = &artifact.implib
         && let Some(expected) = locked_implib.and_then(|values| values.get(key))
-        && *expected != implib.cksum
+        && !crate::tooling::registry::checksums_equal(expected, &implib.cksum)
     {
         return Err(InstallError::LockMismatch {
             pod: pod_name.to_string(),
@@ -501,7 +558,7 @@ async fn ensure_native_artifact(
         && let Some(key) = target::host()
         && let Some(artifact) = spec.artifacts.get(key)
         && let Some(expected) = locked.and_then(|values| values.get(key))
-        && *expected != artifact.cksum
+        && !crate::tooling::registry::checksums_equal(expected, &artifact.cksum)
     {
         return Err(InstallError::LockMismatch {
             pod: pod.name.clone(),
@@ -517,14 +574,21 @@ async fn ensure_native_artifact(
             (spec.artifacts.get(key), target::local_name(&spec.lib))
     {
         let native_dir = final_dir.join("native");
-        let up_to_date = fs::read(native_dir.join(&local_name))
-            .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == artifact.cksum)
-            && artifact.implib.as_ref().is_none_or(|implib| {
-                target::local_implib_name(&spec.lib).is_none_or(|local_implib| {
-                    fs::read(native_dir.join(&local_implib))
-                        .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == implib.cksum)
+        let up_to_date = fs::read(native_dir.join(&local_name)).is_ok_and(|data| {
+            crate::tooling::registry::checksums_equal(
+                blake3::hash(&data).to_hex().as_ref(),
+                &artifact.cksum,
+            )
+        }) && artifact.implib.as_ref().is_none_or(|implib| {
+            target::local_implib_name(&spec.lib).is_none_or(|local_implib| {
+                fs::read(native_dir.join(&local_implib)).is_ok_and(|data| {
+                    crate::tooling::registry::checksums_equal(
+                        blake3::hash(&data).to_hex().as_ref(),
+                        &implib.cksum,
+                    )
                 })
-            });
+            })
+        });
         if up_to_date {
             return Ok(());
         }
@@ -576,7 +640,6 @@ pub async fn install_pod_atomic(
                 pod.name, pod.vers
             )));
         }
-        fs::remove_dir_all(&final_dir).map_err(InstallError::Io)?;
     }
     if offline {
         return Err(InstallError::Offline {
@@ -726,24 +789,11 @@ pub async fn install_pod_atomic(
         fs::create_dir_all(parent)?;
     }
 
-    match fs::rename(&tmp_dir, &final_dir) {
-        Ok(_) => {
-            println!("\x1b[1;32m  Installed\x1b[0m {}@{}", pod.name, pod.vers);
-        }
-        Err(e) => {
-            let _ = fs::remove_dir_all(&tmp_dir);
-            if !final_dir.exists() {
-                return Err(InstallError::Io(e));
-            }
-            if !installed_archive_matches(&final_dir, pod) {
-                return Err(InstallError::Checksum(format!(
-                    "concurrent install of {}@{} produced a different archive",
-                    pod.name, pod.vers
-                )));
-            }
-            ensure_native_artifact(pod, &final_dir, locked, locked_implib, offline).await?;
-        }
+    if let Err(error) = replace_pod_dir(&tmp_dir, &final_dir) {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(error);
     }
+    println!("\x1b[1;32m  Installed\x1b[0m {}@{}", pod.name, pod.vers);
 
     Ok(())
 }
@@ -752,6 +802,85 @@ pub async fn install_pod_atomic(
 mod tests {
     use super::*;
     use crate::tooling::registry::PodVersion;
+
+    #[test]
+    fn failed_repair_keeps_previous_installation() {
+        let base = std::env::temp_dir().join(format!(
+            "olive-install-repair-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let final_dir = base.join("pods").join("test").join("1.0.0");
+        fs::create_dir_all(&final_dir).unwrap();
+        fs::write(final_dir.join("pit.toml"), "old installation").unwrap();
+        let pod = PodVersion {
+            name: "test".to_string(),
+            vers: "1.0.0".to_string(),
+            deps: vec![],
+            cksum: blake3::hash(b"new archive").to_hex().to_string(),
+            dl: "not-a-url".to_string(),
+            yanked: false,
+            olive_req: None,
+            native: None,
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert!(
+            runtime
+                .block_on(install_pod_atomic(
+                    &pod,
+                    final_dir.clone(),
+                    None,
+                    None,
+                    false
+                ))
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(final_dir.join("pit.toml")).unwrap(),
+            "old installation"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn replacement_swaps_complete_directory_and_cleans_backup() {
+        let base = std::env::temp_dir().join(format!(
+            "olive-install-swap-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let parent = base.join("test");
+        let final_dir = parent.join("1.0.0");
+        let staged = base.join("staged");
+        fs::create_dir_all(&final_dir).unwrap();
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(final_dir.join("old"), b"old").unwrap();
+        fs::write(staged.join("new"), b"new").unwrap();
+        replace_pod_dir(&staged, &final_dir).unwrap();
+        assert!(final_dir.join("new").is_file());
+        assert!(!final_dir.join("old").exists());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn failed_swap_restores_previous_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "olive-install-rollback-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let final_dir = base.join("test").join("1.0.0");
+        fs::create_dir_all(&final_dir).unwrap();
+        fs::write(final_dir.join("old"), b"old").unwrap();
+        assert!(replace_pod_dir(&base.join("missing"), &final_dir).is_err());
+        assert_eq!(fs::read(final_dir.join("old")).unwrap(), b"old");
+        assert_eq!(
+            fs::read_dir(final_dir.parent().unwrap()).unwrap().count(),
+            1
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn install_error_download_display() {
@@ -887,13 +1016,14 @@ mod tests {
             "[pod]\nname = \"test\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
-        fs::write(dir.join(INSTALL_CHECKSUM_MARKER), "verified\n").unwrap();
+        let digest = blake3::hash(b"verified").to_hex().to_string();
+        fs::write(dir.join(INSTALL_CHECKSUM_MARKER), format!("{digest}\n")).unwrap();
 
         let pod = PodVersion {
             name: "test".to_string(),
             vers: "1.0.0".to_string(),
             deps: vec![],
-            cksum: "verified".to_string(),
+            cksum: digest.to_uppercase(),
             dl: String::new(),
             yanked: false,
             olive_req: None,
@@ -1063,7 +1193,7 @@ mod tests {
         fs::write(native_dir.join(&local_name), data).unwrap();
 
         let mut artifacts = BTreeMap::new();
-        artifacts.insert(host.to_string(), fake_artifact(&cksum));
+        artifacts.insert(host.to_string(), fake_artifact(&cksum.to_uppercase()));
         let pod = native_pod(
             "fake",
             "1.0.0",

@@ -138,6 +138,40 @@ fn main():
 
 #[cfg(target_os = "linux")]
 #[test]
+fn fixed_ffi_raw_pointer_preserves_low_address_bits() {
+    assert_both(
+        r#"import "/usr/lib/libc.so.6" as c:
+    fn strchr(s: str, ch: int) -> *void
+    fn memcmp(a: *void, b: str, n: int) -> int
+
+fn main():
+    unsafe:
+        let p = c.strchr("abcdef", 99)
+        print(c.memcmp(p, "cdef", 4))
+"#,
+        "0\n",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn variadic_ffi_raw_pointer_preserves_low_address_bits() {
+    assert_both(
+        r#"import "/usr/lib/libc.so.6" as c:
+    fn strchr(s: str, ch: int) -> *void
+    fn printf(fmt: str, ...) -> int
+
+fn main():
+    unsafe:
+        let p = c.strchr("abcdef", 99)
+        c.printf("%s\n", p)
+"#,
+        "cdef\n",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn c_aggregate_rejects_qualified_nested_fields() {
     assert_compile_fails(
         r#"import "/usr/lib/libc.so.6" as c:

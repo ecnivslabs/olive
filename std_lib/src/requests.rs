@@ -405,6 +405,24 @@ struct StreamState {
 const MAX_STREAM_LINE_BYTES: usize = 1024 * 1024;
 const MAX_STREAM_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
+fn read_stream_line(
+    reader: &mut impl std::io::BufRead,
+    line: &mut String,
+) -> std::io::Result<usize> {
+    use std::io::{BufRead, Read};
+
+    line.clear();
+    let count = reader
+        .take((MAX_STREAM_LINE_BYTES + 1) as u64)
+        .read_line(line)?;
+    if count > MAX_STREAM_LINE_BYTES {
+        return Err(std::io::Error::other(
+            "stream response exceeded size limits",
+        ));
+    }
+    Ok(count)
+}
+
 fn stream_table() -> &'static Mutex<HashMap<i64, StreamState>> {
     static TABLE: OnceLock<Mutex<HashMap<i64, StreamState>>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -437,13 +455,11 @@ fn spawn_post_json_stream(url: String, body: String, headers: Vec<(String, Strin
 
         let error = match req.send_bytes(body.as_bytes()) {
             Ok(resp) => {
-                use std::io::BufRead;
                 let mut reader = std::io::BufReader::new(resp.into_reader());
                 let mut line = String::new();
                 let mut read_err = None;
                 loop {
-                    line.clear();
-                    match reader.read_line(&mut line) {
+                    match read_stream_line(&mut reader, &mut line) {
                         Ok(0) => break,
                         Ok(_) => {
                             let mut table = match stream_table().lock() {
@@ -454,9 +470,7 @@ fn spawn_post_json_stream(url: String, body: String, headers: Vec<(String, Strin
                                 // Closed while reading: stop consuming.
                                 break;
                             };
-                            if line.len() > MAX_STREAM_LINE_BYTES
-                                || state.chunk.len() + line.len() > MAX_STREAM_BUFFER_BYTES
-                            {
+                            if state.chunk.len() + line.len() > MAX_STREAM_BUFFER_BYTES {
                                 read_err = Some("stream response exceeded size limits".to_string());
                                 break;
                             }
@@ -557,6 +571,32 @@ pub extern "C" fn olive_http_stream_close(handle: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_line_stops_after_limit_without_consuming_remainder() {
+        let input = vec![b'x'; MAX_STREAM_LINE_BYTES * 3];
+        let mut reader = std::io::Cursor::new(input);
+        let mut line = String::new();
+        let error = read_stream_line(&mut reader, &mut line).unwrap_err();
+        assert_eq!(error.to_string(), "stream response exceeded size limits");
+        assert_eq!(reader.position(), (MAX_STREAM_LINE_BYTES + 1) as u64);
+        assert_eq!(line.len(), MAX_STREAM_LINE_BYTES + 1);
+    }
+
+    #[test]
+    fn stream_line_accepts_exact_limit_and_next_line() {
+        let mut input = vec![b'x'; MAX_STREAM_LINE_BYTES - 1];
+        input.extend_from_slice(b"\nnext\n");
+        let mut reader = std::io::Cursor::new(input);
+        let mut line = String::new();
+        assert_eq!(
+            read_stream_line(&mut reader, &mut line).unwrap(),
+            MAX_STREAM_LINE_BYTES
+        );
+        assert!(line.ends_with('\n'));
+        assert_eq!(read_stream_line(&mut reader, &mut line).unwrap(), 5);
+        assert_eq!(line, "next\n");
+    }
 
     #[test]
     fn http_get_returns_zero_on_bad_url() {

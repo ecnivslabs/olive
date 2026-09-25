@@ -140,6 +140,7 @@ pub(super) fn handle_set_variable(state: &ServerState, request_seq: i64, args: &
         }
     };
     if let Err(msg) = setvar::write_value(session, target, raw) {
+        setvar::discard_value(session, &ty, raw);
         send_error(state, request_seq, "setVariable", &msg);
         return;
     }
@@ -196,6 +197,7 @@ pub(super) fn handle_set_expression(state: &ServerState, request_seq: i64, args:
         }
     };
     if let Err(msg) = setvar::write_value(session, target, raw) {
+        setvar::discard_value(session, &ty, raw);
         send_error(state, request_seq, "setExpression", &msg);
         return;
     }

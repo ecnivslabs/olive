@@ -42,16 +42,12 @@ fn register_dlpack_handle(ptr: *mut DLManagedTensor) -> i64 {
     handle
 }
 
-fn lookup_dlpack_handle(handle: i64) -> Option<*mut DLManagedTensor> {
-    dlpack_handles()
-        .lock()
-        .unwrap()
-        .get(&handle)
-        .map(|ptr| *ptr as *mut DLManagedTensor)
-}
-
 fn with_dlpack_handle<R>(handle: i64, default: R, f: impl FnOnce(*mut DLManagedTensor) -> R) -> R {
-    lookup_dlpack_handle(handle).map(f).unwrap_or(default)
+    let handles = dlpack_handles().lock().unwrap();
+    handles
+        .get(&handle)
+        .map(|ptr| f(*ptr as *mut DLManagedTensor))
+        .unwrap_or(default)
 }
 
 #[repr(C)]
@@ -208,7 +204,11 @@ impl ImportedDlpack {
             let tensor = &(*self.dlmt).dl_tensor;
             let offset = isize::try_from(tensor.byte_offset).ok();
             match offset {
-                Some(offset) => tensor.data.cast::<u8>().add(offset as usize).cast(),
+                Some(offset) => tensor
+                    .data
+                    .cast::<u8>()
+                    .wrapping_add(offset as usize)
+                    .cast(),
                 None => std::ptr::null_mut(),
             }
         }
@@ -221,15 +221,25 @@ impl ImportedDlpack {
         unsafe { (*self.dlmt).dl_tensor.ndim }
     }
     pub fn shape(&self) -> &[i64] {
-        unsafe { std::slice::from_raw_parts((*self.dlmt).dl_tensor.shape, self.ndim() as usize) }
+        unsafe {
+            let tensor = &(*self.dlmt).dl_tensor;
+            if tensor.ndim <= 0 || tensor.shape.is_null() {
+                &[]
+            } else {
+                std::slice::from_raw_parts(tensor.shape, tensor.ndim as usize)
+            }
+        }
     }
     pub fn strides(&self) -> Option<&[i64]> {
         unsafe {
-            let s = (*self.dlmt).dl_tensor.strides;
-            if s.is_null() {
+            let tensor = &(*self.dlmt).dl_tensor;
+            if tensor.ndim < 0 || tensor.strides.is_null() {
                 None
             } else {
-                Some(std::slice::from_raw_parts(s, self.ndim() as usize))
+                Some(std::slice::from_raw_parts(
+                    tensor.strides,
+                    tensor.ndim as usize,
+                ))
             }
         }
     }
@@ -326,7 +336,7 @@ pub extern "C" fn olive_dlpack_data_ptr(handle: i64) -> i64 {
         let Some(offset) = isize::try_from(tensor.byte_offset).ok() else {
             return 0;
         };
-        tensor.data.cast::<u8>().add(offset as usize) as i64
+        tensor.data.cast::<u8>().wrapping_add(offset as usize) as i64
     })
 }
 
@@ -466,6 +476,7 @@ pub unsafe fn dlpack_import(obj: PyObject) -> Option<ImportedDlpack> {
 mod tests {
     use super::*;
     use crate::python::with_gil;
+    use std::sync::mpsc;
 
     static mut EXPORT_FREED: bool = false;
     unsafe extern "C" fn mark_export_freed(_ctx: *mut c_void) {
@@ -476,10 +487,98 @@ mod tests {
 
     #[test]
     fn invalid_dlpack_handles_fail_closed() {
-        assert_eq!(olive_dlpack_data_ptr(1), 0);
-        assert_eq!(olive_dlpack_shape_at(1, 0), 0);
-        assert_eq!(olive_dlpack_strides_at(1, 0), 0);
-        olive_dlpack_release(1);
+        assert_eq!(olive_dlpack_data_ptr(0), 0);
+        assert_eq!(olive_dlpack_shape_at(0, 0), 0);
+        assert_eq!(olive_dlpack_strides_at(0, 0), 0);
+        olive_dlpack_release(0);
+    }
+
+    #[test]
+    fn imported_tensor_handles_empty_and_invalid_dimensions_without_invalid_slices() {
+        unsafe extern "C" fn free_tensor(dlmt: *mut DLManagedTensor) {
+            unsafe { drop(Box::from_raw(dlmt)) };
+        }
+
+        let dlmt = Box::into_raw(Box::new(DLManagedTensor {
+            dl_tensor: DLTensor {
+                data: std::ptr::null_mut(),
+                device: DLDevice {
+                    device_type: DL_CPU,
+                    device_id: 0,
+                },
+                ndim: 0,
+                dtype: DLDataType {
+                    code: DL_INT,
+                    bits: 8,
+                    lanes: 1,
+                },
+                shape: std::ptr::null_mut(),
+                strides: std::ptr::null_mut(),
+                byte_offset: 0,
+            },
+            manager_ctx: std::ptr::null_mut(),
+            deleter: Some(free_tensor),
+        }));
+        let imported = ImportedDlpack { dlmt };
+        assert!(imported.shape().is_empty());
+        assert!(imported.strides().is_none());
+
+        unsafe { (*dlmt).dl_tensor.ndim = -1 };
+        assert!(imported.shape().is_empty());
+        assert!(imported.strides().is_none());
+
+        unsafe { (*dlmt).dl_tensor.ndim = 1 };
+        assert!(imported.shape().is_empty());
+        assert!(imported.strides().is_none());
+        imported.release();
+    }
+
+    #[test]
+    fn accessor_keeps_tensor_alive_until_read_completes() {
+        unsafe extern "C" fn free_tensor(dlmt: *mut DLManagedTensor) {
+            unsafe { drop(Box::from_raw(dlmt)) };
+        }
+
+        let tensor = Box::new(DLManagedTensor {
+            dl_tensor: DLTensor {
+                data: std::ptr::null_mut(),
+                device: DLDevice {
+                    device_type: DL_CPU,
+                    device_id: 0,
+                },
+                ndim: 0,
+                dtype: DLDataType {
+                    code: DL_INT,
+                    bits: 8,
+                    lanes: 1,
+                },
+                shape: std::ptr::null_mut(),
+                strides: std::ptr::null_mut(),
+                byte_offset: 0,
+            },
+            manager_ctx: std::ptr::null_mut(),
+            deleter: Some(free_tensor),
+        });
+        let handle = register_dlpack_handle(Box::into_raw(tensor));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            with_dlpack_handle(handle, 0, |dlmt| {
+                entered_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                unsafe { (*dlmt).dl_tensor.device.device_type }
+            })
+        });
+
+        entered_rx.recv().unwrap();
+        let held_during_read = dlpack_handles().try_lock().is_err();
+        resume_tx.send(()).unwrap();
+        assert_eq!(reader.join().unwrap(), DL_CPU);
+        olive_dlpack_release(handle);
+        assert!(
+            held_during_read,
+            "release could free a tensor during an accessor read"
+        );
     }
 
     #[test]

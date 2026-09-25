@@ -263,6 +263,13 @@ fn build_archive(name: &str, version: &str, manifest: &Config) -> Result<Vec<u8>
         builder.finish().map_err(|e| e.to_string())?;
     }
 
+    if tar_bytes.len() > MAX_TAR_BYTES {
+        return Err(format!(
+            "pod source data exceeds the {} byte uncompressed limit",
+            MAX_TAR_BYTES
+        ));
+    }
+
     zstd::encode_all(tar_bytes.as_slice(), 3).map_err(|e| e.to_string())
 }
 
@@ -537,6 +544,40 @@ fn upload_asset(
     upload_named_asset(gh, repo, release_id, &format!("{name}.pit.zst"), bytes)
 }
 
+fn release_asset_name(
+    existing: &[Value],
+    requested: &str,
+    data: &[u8],
+) -> Result<(String, Option<String>), String> {
+    if !existing
+        .iter()
+        .any(|asset| asset["name"].as_str() == Some(requested))
+    {
+        return Ok((requested.to_string(), None));
+    }
+    let base = format!("olive-{}", blake3::hash(data).to_hex());
+    for suffix in 0..=existing.len() {
+        let alternate = if suffix == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{suffix}")
+        };
+        let Some(asset) = existing
+            .iter()
+            .find(|asset| asset["name"].as_str() == Some(alternate.as_str()))
+        else {
+            return Ok((alternate, None));
+        };
+        if asset["state"] == "uploaded" {
+            let url = asset["browser_download_url"]
+                .as_str()
+                .ok_or_else(|| format!("release asset {alternate} has no download URL"))?;
+            return Ok((alternate, Some(url.to_string())));
+        }
+    }
+    Err("release asset names are exhausted".to_string())
+}
+
 fn upload_named_asset(
     gh: &GhClient,
     repo: &str,
@@ -544,35 +585,37 @@ fn upload_named_asset(
     asset_name: &str,
     bytes: Vec<u8>,
 ) -> Result<String, String> {
-    // Delete the old asset if it exists so we can re-upload cleanly.
-    let assets_url = format!(
-        "https://api.github.com/repos/{}/releases/{}/assets",
-        repo, release_id
-    );
-    if let Ok(resp) = gh.get(&assets_url).send()
-        && let Ok(assets) = resp.json::<Value>()
-        && let Some(arr) = assets.as_array()
-    {
-        for asset in arr {
-            if asset["name"].as_str() == Some(asset_name)
-                && let Some(id) = asset["id"].as_u64()
-            {
-                let _ = gh
-                    .client
-                    .delete(format!(
-                        "https://api.github.com/repos/{}/releases/assets/{}",
-                        repo, id
-                    ))
-                    .header("Authorization", format!("token {}", gh.token))
-                    .header("User-Agent", "pit/0.1.0")
-                    .send();
-            }
+    let mut existing = Vec::new();
+    for page in 1..=1000 {
+        let assets_url = format!(
+            "https://api.github.com/repos/{repo}/releases/{release_id}/assets?per_page=100&page={page}"
+        );
+        let response = gh
+            .get(&assets_url)
+            .send()
+            .map_err(|error| format!("could not list release assets: {error}"))?
+            .error_for_status()
+            .map_err(|error| format!("could not list release assets: {error}"))?;
+        let page_assets: Vec<Value> = response
+            .json()
+            .map_err(|error| format!("invalid release asset list: {error}"))?;
+        let count = page_assets.len();
+        existing.extend(page_assets);
+        if count < 100 {
+            break;
         }
+        if page == 1000 {
+            return Err("release asset list exceeds 100,000 entries".to_string());
+        }
+    }
+    let (upload_name, existing_url) = release_asset_name(&existing, asset_name, &bytes)?;
+    if let Some(url) = existing_url {
+        return Ok(url);
     }
 
     let upload_url = format!(
         "https://uploads.github.com/repos/{}/releases/{}/assets?name={}",
-        repo, release_id, asset_name
+        repo, release_id, upload_name
     );
 
     let resp: Value = gh
@@ -583,6 +626,8 @@ fn upload_named_asset(
         .header("Content-Type", "application/octet-stream")
         .body(bytes)
         .send()
+        .map_err(|e| format!("asset upload failed: {}", e))?
+        .error_for_status()
         .map_err(|e| format!("asset upload failed: {}", e))?
         .json()
         .map_err(|e| e.to_string())?;
@@ -808,6 +853,34 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn republish_keeps_old_asset_and_uses_content_address() {
+        let requested = "example.pit.zst";
+        let old = json!({"name": requested, "browser_download_url": "https://example.com/old"});
+        let (alternate, reused) =
+            release_asset_name(std::slice::from_ref(&old), requested, b"new").unwrap();
+        assert!(alternate.starts_with("olive-"));
+        assert_ne!(alternate, requested);
+        assert!(reused.is_none());
+        let new = json!({"name": alternate, "state": "uploaded", "browser_download_url": "https://example.com/new"});
+        let (again, reused) = release_asset_name(&[old, new], requested, b"new").unwrap();
+        assert_eq!(again, alternate);
+        assert_eq!(reused.as_deref(), Some("https://example.com/new"));
+    }
+
+    #[test]
+    fn republish_skips_incomplete_asset() {
+        let requested = "example.pit.zst";
+        let old = json!({"name": requested, "state": "uploaded"});
+        let (alternate, _) =
+            release_asset_name(std::slice::from_ref(&old), requested, b"new").unwrap();
+        let incomplete = json!({"name": alternate, "state": "starter", "browser_download_url": "https://example.com/incomplete"});
+        let (next, reused) = release_asset_name(&[old, incomplete], requested, b"new").unwrap();
+        assert_ne!(next, alternate);
+        assert!(next.ends_with("-1"));
+        assert!(reused.is_none());
+    }
 
     #[test]
     fn parse_github_repo_https() {

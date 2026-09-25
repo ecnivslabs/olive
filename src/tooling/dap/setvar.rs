@@ -175,15 +175,44 @@ pub(crate) fn encode_literal(session: &EngineShared, ty: &Type, text: &str) -> R
     // through the runtime so a written 0 stays distinct from None. A str
     // word is already a valid tag-encoded member, no re-encode needed.
     if ty.is_tag_encoded_union() {
+        let Type::Union(members) = ty else {
+            unreachable!()
+        };
         let (kind, payload) = if text == "None" {
+            if !members.contains(&Type::Null) {
+                return Err(format!("invalid literal '{text}' for {ty}"));
+            }
             (0, 0)
         } else if text == "true" || text == "false" {
+            if !members.contains(&Type::Bool) {
+                return Err(format!("invalid literal '{text}' for {ty}"));
+            }
             (2, (text == "true") as i64)
         } else if let Ok(n) = text.parse::<i64>() {
+            if !members
+                .iter()
+                .any(|member| is_integer_type(member) && check_int_range(member, n).is_ok())
+            {
+                return Err(format!("invalid literal '{text}' for {ty}"));
+            }
             (1, n)
+        } else if let Ok(n) = text.parse::<u64>() {
+            if !members.iter().any(|member| {
+                matches!(member, Type::U64 | Type::Usize)
+                    && (matches!(member, Type::U64) || usize::try_from(n).is_ok())
+            }) {
+                return Err(format!("invalid literal '{text}' for {ty}"));
+            }
+            (1, n as i64)
         } else if let Ok(f) = text.parse::<f64>() {
+            if !members
+                .iter()
+                .any(|member| matches!(member, Type::Float | Type::F32))
+            {
+                return Err(format!("invalid literal '{text}' for {ty}"));
+            }
             (3, f.to_bits() as i64)
-        } else if matches!(ty, Type::Union(members) if members.contains(&Type::Str)) {
+        } else if members.contains(&Type::Str) {
             return encode_str(session, text);
         } else {
             return Err(format!("invalid literal '{text}' for {ty}"));
@@ -204,15 +233,21 @@ pub(crate) fn encode_literal(session: &EngineShared, ty: &Type, text: &str) -> R
                 Err(format!("expected None, found '{text}'"))
             }
         }
+        Type::U64 => text
+            .parse::<u64>()
+            .map(|n| n as i64)
+            .map_err(|_| format!("invalid integer literal '{text}'")),
+        Type::Usize => text
+            .parse::<usize>()
+            .map(|n| n as i64)
+            .map_err(|_| format!("invalid integer literal '{text}'")),
         int_ty @ (Type::Int
         | Type::I8
         | Type::I16
         | Type::I32
         | Type::U8
         | Type::U16
-        | Type::U32
-        | Type::U64
-        | Type::Usize) => {
+        | Type::U32) => {
             let n: i64 = text
                 .parse()
                 .map_err(|_| format!("invalid integer literal '{text}'"))?;
@@ -317,8 +352,9 @@ fn build_value(
             }
             let ptr = call_alloc1(session, "olive_set_new", items.len() as i64)?;
             guard.parent = ptr;
+            let desc = build_descriptor(session, elem_ty);
             for _ in items {
-                call_set_add(session, ptr, guard.pending[0].1)?;
+                call_set_add_typed(session, ptr, guard.pending[0].1, &desc)?;
                 guard.pending.remove(0);
             }
             guard.committed = true;
@@ -368,15 +404,12 @@ fn build_value(
             }
             let ptr = call_alloc0(session, "olive_obj_new")?;
             guard.parent = ptr;
+            let key_desc = build_descriptor(session, key_ty);
+            let val_desc = build_descriptor(session, val_ty);
             for _ in pairs {
                 let kraw = guard.pending[0].1;
                 let vraw = guard.pending[1].1;
-                if needs_key_descriptor(key_ty) {
-                    let desc = build_descriptor(session, key_ty);
-                    obj_set_typed(session, ptr, kraw, vraw, &desc)?;
-                } else {
-                    obj_set(session, ptr, kraw, vraw)?;
-                }
+                obj_set_owned_typed(session, ptr, kraw, vraw, &key_desc, &val_desc)?;
                 guard.pending.remove(0);
                 guard.pending.remove(0);
             }
@@ -509,40 +542,6 @@ fn build_seq(
     Ok(ptr)
 }
 
-/// Mirrors `codegen::cranelift::imports::needs_key_descriptor` -- a dict key
-/// of one of these types hashes/compares by value (structurally for
-/// aggregates, by static type for scalars, so a raw odd int above the
-/// string-tag floor is never misread as a tagged string pointer), so the
-/// insert needs `olive_obj_set_typed`'s descriptor rather than plain
-/// `olive_obj_set`. Duplicated rather than shared: that module tree is
-/// private to `codegen::cranelift`, and this is a stable, nineteen-variant
-/// match, not an algorithm that could drift.
-fn needs_key_descriptor(ty: &Type) -> bool {
-    matches!(
-        concrete_ty(ty),
-        Type::Struct(..)
-            | Type::Enum(..)
-            | Type::Tuple(_)
-            | Type::List(_)
-            | Type::Set(_)
-            | Type::Dict(_, _)
-            | Type::Int
-            | Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Usize
-            | Type::Float
-            | Type::F32
-            | Type::Str
-            | Type::Bool
-            | Type::Null
-    )
-}
-
 fn build_descriptor(session: &EngineShared, ty: &Type) -> CString {
     let bytes = type_descriptor(
         ty,
@@ -559,6 +558,22 @@ fn build_descriptor(session: &EngineShared, ty: &Type) -> CString {
 /// struct field, an enum payload word).
 fn value_to_raw(session: &EngineShared, ty: &Type, value: Value) -> Result<i64, String> {
     if ty.is_tag_encoded_union() {
+        let Type::Union(members) = ty else {
+            unreachable!()
+        };
+        let accepted = match &value {
+            Value::Bool(_) => members.contains(&Type::Bool),
+            Value::Int(n) => members
+                .iter()
+                .any(|member| is_integer_type(member) && check_int_range(member, *n).is_ok()),
+            Value::Float(_) => members
+                .iter()
+                .any(|member| matches!(member, Type::Float | Type::F32)),
+            Value::Str(_) => members.contains(&Type::Str),
+        };
+        if !accepted {
+            return Err(format!("value {value} is not a member of {ty}"));
+        }
         return match value {
             Value::Bool(b) => values::any_encode(session, 2, b as i64)
                 .ok_or_else(|| "runtime encoder unavailable".to_string()),
@@ -638,28 +653,41 @@ fn call_alloc4(
     Ok(f(a, b, c, d))
 }
 
-fn obj_set(session: &EngineShared, obj: i64, key: i64, val: i64) -> Result<(), String> {
-    let ptr = session
-        .runtime_symbol("olive_obj_set")
-        .ok_or_else(|| "runtime symbol olive_obj_set unavailable".to_string())?;
-    let f: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    f(obj, key, val);
-    Ok(())
-}
-
-fn obj_set_typed(
+fn obj_set_owned_typed(
     session: &EngineShared,
     obj: i64,
     key: i64,
     val: i64,
-    desc: &CString,
+    key_desc: &CString,
+    val_desc: &CString,
 ) -> Result<(), String> {
     let ptr = session
-        .runtime_symbol("olive_obj_set_typed")
-        .ok_or_else(|| "runtime symbol olive_obj_set_typed unavailable".to_string())?;
-    let f: extern "C" fn(i64, i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    f(obj, key, val, desc.as_ptr() as i64);
+        .runtime_symbol("olive_obj_set_owned_typed")
+        .ok_or_else(|| "runtime symbol olive_obj_set_owned_typed unavailable".to_string())?;
+    let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    f(
+        obj,
+        key,
+        val,
+        key_desc.as_ptr() as i64,
+        val_desc.as_ptr() as i64,
+    );
     Ok(())
+}
+
+fn is_integer_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+    )
 }
 
 fn check_int_range(ty: &Type, n: i64) -> Result<(), String> {
@@ -670,7 +698,11 @@ fn check_int_range(ty: &Type, n: i64) -> Result<(), String> {
         Type::U8 => (0, u8::MAX as i64),
         Type::U16 => (0, u16::MAX as i64),
         Type::U32 => (0, u32::MAX as i64),
-        // Int/U64/Usize: every representable i64 bit pattern is valid.
+        Type::U64 if n < 0 => return Err(format!("{n} is out of range for {ty}")),
+        Type::Usize if usize::try_from(n).is_err() => {
+            return Err(format!("{n} is out of range for {ty}"));
+        }
+        // Int/U64/Usize: remaining representable i64 values are valid.
         _ => return Ok(()),
     };
     if n < min || n > max {
@@ -760,15 +792,20 @@ pub(crate) fn write_value(
     }
 }
 
-fn call_set_add(session: &EngineShared, set_ptr: i64, raw: i64) -> Result<(), String> {
+fn call_set_add_typed(
+    session: &EngineShared,
+    set_ptr: i64,
+    raw: i64,
+    desc: &CString,
+) -> Result<(), String> {
     if set_ptr == 0 {
         return Err("cannot add an element to a null set".to_string());
     }
-    let Some(ptr) = session.runtime_symbol("olive_set_add") else {
-        return Err("runtime symbol olive_set_add unavailable".to_string());
+    let Some(ptr) = session.runtime_symbol("olive_set_add_typed") else {
+        return Err("runtime symbol olive_set_add_typed unavailable".to_string());
     };
-    let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(ptr) };
-    f(set_ptr, raw);
+    let f: extern "C" fn(i64, i64, i64) = unsafe { std::mem::transmute(ptr) };
+    f(set_ptr, raw, desc.as_ptr() as i64);
     Ok(())
 }
 
@@ -786,6 +823,10 @@ fn free_built(session: &EngineShared, ty: &Type, raw: i64) {
     };
     let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(ptr) };
     f(raw, desc.as_ptr() as i64);
+}
+
+pub(crate) fn discard_value(session: &EngineShared, ty: &Type, raw: i64) {
+    free_built(session, ty, raw);
 }
 
 /// Owns the children of an aggregate under construction until each one is

@@ -36,3 +36,26 @@ fn main():
         "[1, 2]\n",
     );
 }
+
+#[test]
+fn higher_order_fixed_container_parameters_are_not_variadic() {
+    assert_both(
+        r#"fn list_value(xs: [int]) -> int:
+    return xs[0]
+
+fn dict_value(d: {str: int}) -> int:
+    return d["key"]
+
+fn apply_list(f: fn([int]) -> int, xs: [int]) -> int:
+    return f(xs)
+
+fn apply_dict(f: fn({str: int}) -> int, d: {str: int}) -> int:
+    return f(d)
+
+fn main():
+    print(apply_list(list_value, [7]))
+    print(apply_dict(dict_value, {"key": 9}))
+"#,
+        "7\n9\n",
+    );
+}

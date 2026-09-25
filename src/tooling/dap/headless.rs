@@ -383,6 +383,7 @@ fn handle_set_var(state: &HeadlessState, id: Option<i64>, args: &Value) {
         }
     };
     if let Err(msg) = setvar::write_value(session, target, raw) {
+        setvar::discard_value(session, &ty, raw);
         err(state, id, &msg);
         return;
     }

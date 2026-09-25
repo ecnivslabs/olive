@@ -67,7 +67,7 @@ impl<M: Module> CraneliftCodegen<M> {
             builder.seal_block(copy);
             builder.switch_to_block(copy);
             let tagged = builder.ins().load(types::I64, MemFlags::new(), arg, 16);
-            let desc = builder.ins().band_imm(tagged, -2);
+            let desc = builder.ins().band_imm(tagged, !7);
             let call = builder.ins().call(relocate, &[arg, desc]);
             let copied = builder.inst_results(call)[0];
             builder.ins().jump(done, &[BlockArg::Value(copied)]);

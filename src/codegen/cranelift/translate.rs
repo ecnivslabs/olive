@@ -100,7 +100,7 @@ pub(super) fn emit_value_free(
         builder.seal_block(nonnull_bb);
         builder.switch_to_block(nonnull_bb);
         let desc_tagged = builder.ins().load(types::I64, MemFlags::trusted(), val, 16);
-        let desc_ptr = builder.ins().band_imm(desc_tagged, -2);
+        let desc_ptr = builder.ins().band_imm(desc_tagged, !7);
         let free_id = func_ids["__olive_free_typed"];
         let local_func = module.declare_func_in_func(free_id, builder.func);
         builder.ins().call(local_func, &[val, desc_ptr]);

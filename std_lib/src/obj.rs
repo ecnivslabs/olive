@@ -84,6 +84,29 @@ pub extern "C" fn olive_obj_set_replacing_typed(
     })
 }
 
+/// Inserts a freshly built key and value. The dict copies string keys on
+/// insert and retains its existing key on replacement, so release the key
+/// whenever the dict does not take ownership of that word.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_set_owned_typed(
+    obj_ptr: i64,
+    attr: i64,
+    val: i64,
+    key_desc: i64,
+    val_desc: i64,
+) -> i64 {
+    crate::hash_typed::with_key_descriptor(key_desc, || {
+        let obj = unsafe { &*(obj_ptr as *const OliveObj) };
+        let release_key = obj.fields.contains_key(&OliveStringKey(attr))
+            || crate::store_key_needs_owned_copy(attr);
+        let result = obj_store(obj_ptr, attr, val, Some(val_desc as *const u8));
+        if release_key {
+            crate::free_typed::olive_free_typed(attr, key_desc);
+        }
+        result
+    })
+}
+
 /// Shared insert core. Returns `obj_ptr` in every case, matching
 /// `olive_obj_set`. When `val_desc` is set, a displaced value is released
 /// through it; otherwise the old value is left alone for the caller (plain

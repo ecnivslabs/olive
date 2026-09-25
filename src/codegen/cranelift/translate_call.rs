@@ -172,7 +172,12 @@ fn emit_vararg_runtime_call<M: Module>(
         let fixed = entry.is_some_and(|e| i < e.params.len());
         let declared = entry.and_then(|e| e.params.get(i).map(String::as_str));
         let code = vararg_code(declared, static_ty.as_ref(), fixed);
-        let value = if code == 6 {
+        let is_string = if fixed {
+            declared == Some("str")
+        } else {
+            matches!(static_ty, Some(OliveType::Str))
+        };
+        let value = if is_string {
             builder.ins().band_imm(value, !STR_TAG_BITS)
         } else {
             value
@@ -378,7 +383,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 // `Constant::Str`, and must be untagged before use as a raw
                 // descriptor pointer.
                 let desc_tagged = builder.ins().load(types::I64, MemFlags::trusted(), val, 16);
-                let desc_ptr = builder.ins().band_imm(desc_tagged, -2);
+                let desc_ptr = builder.ins().band_imm(desc_tagged, !STR_TAG_BITS);
                 let func_id = func_ids[name.as_str()];
                 let local_func = module.declare_func_in_func(func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[val, desc_ptr]);
@@ -731,7 +736,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     let is_str_arg = if let Some(entry) = ffi_entry
                         && i < entry.params.len()
                     {
-                        matches!(entry.params[i].as_str(), "str" | "ptr")
+                        entry.params[i] == "str"
                     } else {
                         args.get(i).is_some_and(|op| match op {
                             Operand::Constant(Constant::Str(_)) => true,

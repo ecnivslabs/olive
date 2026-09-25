@@ -589,43 +589,17 @@ impl<'a> MirBuilder<'a> {
         let meta = match self.fn_meta.get(fn_name).cloned() {
             Some(m) => m,
             None => {
-                let vararg_idx = param_tys.iter().position(|ty| matches!(ty, Type::List(_)));
-                let kwarg_idx = param_tys
-                    .iter()
-                    .position(|ty| matches!(ty, Type::Dict(_, _)));
-                if vararg_idx.is_some() || kwarg_idx.is_some() {
-                    let param_names = param_tys
-                        .iter()
-                        .enumerate()
-                        .map(|(i, _)| {
-                            if Some(i) == vararg_idx {
-                                "__vararg".to_string()
-                            } else if Some(i) == kwarg_idx {
-                                "__kwarg".to_string()
-                            } else {
-                                format!("__arg{i}")
-                            }
-                        })
-                        .collect();
-                    FnMeta {
-                        param_names,
-                        vararg_idx,
-                        kwarg_idx,
-                        default_exprs: vec![None; param_tys.len()],
+                let mut res = Vec::new();
+                let c_ffi = self.c_ffi_fns.contains(fn_name);
+                for i in 0..arg_ops.len() {
+                    if c_ffi && i >= param_tys.len() {
+                        res.push(arg_ops[i].clone());
+                        continue;
                     }
-                } else {
-                    let mut res = Vec::new();
-                    let c_ffi = self.c_ffi_fns.contains(fn_name);
-                    for i in 0..arg_ops.len() {
-                        if c_ffi && i >= param_tys.len() {
-                            res.push(arg_ops[i].clone());
-                            continue;
-                        }
-                        let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
-                        res.push(self.coerce(arg_ops[i].clone(), &arg_tys[i], p_ty, span));
-                    }
-                    return res;
+                    let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
+                    res.push(self.coerce(arg_ops[i].clone(), &arg_tys[i], p_ty, span));
                 }
+                return res;
             }
         };
 

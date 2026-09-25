@@ -26,7 +26,19 @@ pub(crate) fn owns_fatptr(v: i64) -> bool {
 pub struct StructSlabs {
     fixed: Vec<GenSlab>,
     large: Vec<(usize, GenSlab)>,
+    fatptrs: HashSet<i64>,
     is_global: bool,
+}
+
+impl Drop for StructSlabs {
+    fn drop(&mut self) {
+        if !self.fatptrs.is_empty() {
+            let mut owners = fatptr_owners().lock().unwrap();
+            for ptr in self.fatptrs.drain() {
+                owners.remove(&ptr);
+            }
+        }
+    }
 }
 
 impl StructSlabs {
@@ -40,6 +52,7 @@ impl StructSlabs {
                 .map(|w| GenSlab::new(w * 8).with_global(is_global))
                 .collect(),
             large: Vec::new(),
+            fatptrs: HashSet::new(),
             is_global,
         }
     }
@@ -60,6 +73,18 @@ impl StructSlabs {
     pub(crate) fn owns_addr(&self, addr: usize) -> bool {
         self.fixed.iter().any(|sl| sl.owns_addr(addr))
             || self.large.iter().any(|(_, sl)| sl.owns_addr(addr))
+    }
+
+    fn alloc_fatptr(&mut self) -> *mut u8 {
+        let body = self.class_for(FATPTR_WORDS).alloc().0;
+        self.fatptrs.insert(body as i64);
+        body
+    }
+
+    fn free_slot(&mut self, ptr: i64, words: usize) {
+        if self.class_for(words).free(ptr as *mut u8) && words == FATPTR_WORDS {
+            self.fatptrs.remove(&ptr);
+        }
     }
 }
 
@@ -164,11 +189,11 @@ fn free_struct_slot_raw_local(ptr: i64, n_fields: i64) {
     let words = n_fields as usize + 1;
     let active = crate::slab::ACTIVE_SLABS.get();
     if !active.is_null() {
-        unsafe { (*active).struct_slabs.class_for(words).free(ptr as *mut u8) };
+        unsafe { (*active).struct_slabs.free_slot(ptr, words) };
     } else {
         STRUCT_SLABS.with(|s| {
             let s = unsafe { &mut *s.get() };
-            s.class_for(words).free(ptr as *mut u8);
+            s.free_slot(ptr, words);
         });
     }
 }
@@ -177,11 +202,14 @@ fn free_struct_slot_raw_local(ptr: i64, n_fields: i64) {
 pub extern "C" fn olive_fatptr_alloc() -> i64 {
     let active = crate::slab::ACTIVE_SLABS.get();
     let body = if !active.is_null() {
-        unsafe { (*active).struct_slabs.class_for(FATPTR_WORDS).alloc().0 }
+        unsafe { (*active).struct_slabs.alloc_fatptr() }
     } else {
-        STRUCT_SLABS.with(|s| unsafe { (&mut *s.get()).class_for(FATPTR_WORDS).alloc().0 })
+        STRUCT_SLABS.with(|s| unsafe { (&mut *s.get()).alloc_fatptr() })
     };
-    unsafe { *(body as *mut i64) = KIND_FATPTR };
+    unsafe {
+        std::ptr::write_bytes(body.add(8) as *mut i64, 0, FATPTR_WORDS - 1);
+        *(body as *mut i64) = KIND_FATPTR;
+    }
     fatptr_owners().lock().unwrap().insert(body as i64);
     body as i64
 }
@@ -371,6 +399,21 @@ mod tests {
             *((ptr + 24) as *mut i64) = 0;
         }
         olive_free_fatptr(ptr);
+    }
+
+    #[test]
+    fn task_teardown_removes_fatptr_ownership() {
+        let mut slabs = crate::slab::SlabSet::new();
+        let previous = crate::slab::ACTIVE_SLABS.replace(&mut slabs);
+        let ptr = olive_fatptr_alloc();
+        assert!(owns_fatptr(ptr));
+        let freed = olive_fatptr_alloc();
+        olive_free_fatptr(freed);
+        assert!(slabs.struct_slabs.fatptrs.contains(&ptr));
+        assert!(!slabs.struct_slabs.fatptrs.contains(&freed));
+        crate::slab::ACTIVE_SLABS.set(previous);
+        drop(slabs);
+        assert!(!owns_fatptr(ptr));
     }
 
     #[test]
