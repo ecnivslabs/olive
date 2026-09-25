@@ -474,8 +474,9 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.ins().store(mf, desc_ptr, fut_ptr, 32);
         builder.ins().store(mf, fsz, fut_ptr, 40);
         builder.ins().store(mf, zero, fut_ptr, 48);
-        builder.ins().store(mf, zero, fut_ptr, 56);
-        builder.ins().store(mf, zero, fut_ptr, 57);
+        let zero_flag = builder.ins().iconst(types::I8, 0);
+        builder.ins().store(mf, zero_flag, fut_ptr, 56);
+        builder.ins().store(mf, zero_flag, fut_ptr, 57);
 
         builder.ins().return_(&[fut_ptr]);
         builder.finalize();

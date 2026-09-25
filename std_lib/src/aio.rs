@@ -632,6 +632,12 @@ struct OliveSmFuture {
     poll_lock: AtomicBool,
 }
 
+const _: () = {
+    assert!(std::mem::size_of::<OliveSmFuture>() == 64);
+    assert!(std::mem::offset_of!(OliveSmFuture, terminal) == 56);
+    assert!(std::mem::offset_of!(OliveSmFuture, poll_lock) == 57);
+};
+
 /// Allocation counters for state machine frames and handles, backing the
 /// reclamation regression tests. Generated code routes both through
 /// `olive_sm_alloc`/`olive_sm_free` so JIT and AOT workloads share the
