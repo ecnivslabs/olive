@@ -1,6 +1,35 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
 
+fn wait_for_sm_free(future: i64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while super::sm_live().lock().unwrap().contains(&future) {
+        assert!(std::time::Instant::now() < deadline, "future was not freed");
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn contended_poll_does_not_release_another_drivers_lock() {
+    let future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: 0,
+        frame: 0,
+        cancelled: AtomicI64::new(0),
+        result_desc: 0,
+        frame_size: 0,
+        cached: 0,
+        terminal: AtomicBool::new(false),
+        poll_lock: AtomicBool::new(false),
+    };
+    let ptr = &future as *const OliveSmFuture as i64;
+    let guard = try_acquire_sm_poll(ptr).unwrap();
+    assert!(try_acquire_sm_poll(ptr).is_none());
+    assert!(future.poll_lock.load(Ordering::Acquire));
+    drop(guard);
+    assert!(!future.poll_lock.load(Ordering::Acquire));
+}
+
 enum ChildState {
     Pending,
     Done,
@@ -746,15 +775,15 @@ fn completed_sm_future_can_be_awaited_twice() {
     assert_eq!(olive_await_future(future), 42);
     assert_eq!(olive_await_future(future), 42);
     olive_free_future(future);
-    assert!(!super::sm_live().lock().unwrap().contains(&future));
+    wait_for_sm_free(future);
 }
 
 #[test]
-fn freeing_running_sm_future_defers_handle_release() {
+fn completed_sm_future_remains_pinned_until_poll_guard_exits() {
     let _guard = CANCEL_LOCK.lock().unwrap();
     let frame = super::olive_sm_alloc(16);
     unsafe {
-        *(frame as *mut i64) = 0;
+        *(frame as *mut i64) = -1;
         *((frame as *mut i64).add(1)) = 0;
     }
     let future = super::olive_sm_alloc(std::mem::size_of::<super::OliveSmFuture>() as i64);
@@ -763,7 +792,7 @@ fn freeing_running_sm_future_defers_handle_release() {
             future as *mut super::OliveSmFuture,
             super::OliveSmFuture {
                 kind: KIND_SM_FUTURE,
-                poll_fn: counting_suspend_once as *const () as usize as i64,
+                poll_fn: counting_complete as *const () as usize as i64,
                 frame,
                 cancelled: AtomicI64::new(0),
                 result_desc: 0,
@@ -776,19 +805,64 @@ fn freeing_running_sm_future_defers_handle_release() {
     }
 
     let ex = olive_executor();
-    let waiter = std::thread::spawn(move || olive_await_future(future));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while !ex.task_map.lock().unwrap().contains_key(&future) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "future was not registered"
+    let task = executor_get_or_create_task(ex, future);
+    let poll_guard = super::try_acquire_sm_poll(future).unwrap();
+    assert_eq!(executor_publish(ex, &task, 42), DriveOutcome::Completed);
+    assert!(ex.completed_tasks.lock().unwrap().contains_key(&future));
+
+    olive_free_future(future);
+    assert!(!ex.completed_tasks.lock().unwrap().contains_key(&future));
+    assert!(super::sm_live().lock().unwrap().contains(&future));
+
+    drop(poll_guard);
+    drop(task);
+    assert!(!super::sm_live().lock().unwrap().contains(&future));
+}
+
+#[test]
+fn freeing_running_sm_future_defers_handle_release() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    EXCLUSIVE_POLL_CALLS.store(0, Ordering::SeqCst);
+    EXCLUSIVE_POLL_ENTERED.store(false, Ordering::SeqCst);
+    EXCLUSIVE_POLL_RELEASE.store(false, Ordering::SeqCst);
+    let frame = super::olive_sm_alloc(16);
+    unsafe {
+        *(frame as *mut i64) = 0;
+        *((frame as *mut i64).add(1)) = 0;
+    }
+    let future = super::olive_sm_alloc(std::mem::size_of::<super::OliveSmFuture>() as i64);
+    unsafe {
+        std::ptr::write(
+            future as *mut super::OliveSmFuture,
+            super::OliveSmFuture {
+                kind: KIND_SM_FUTURE,
+                poll_fn: exclusive_blocking_poll as *const () as usize as i64,
+                frame,
+                cancelled: AtomicI64::new(0),
+                result_desc: 0,
+                frame_size: 16,
+                cached: 0,
+                terminal: AtomicBool::new(false),
+                poll_lock: AtomicBool::new(false),
+            },
         );
+    }
+
+    let waiter = std::thread::spawn(move || olive_await_future(future));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !EXCLUSIVE_POLL_ENTERED.load(Ordering::Acquire) {
+        if std::time::Instant::now() >= deadline {
+            EXCLUSIVE_POLL_RELEASE.store(true, Ordering::Release);
+            panic!("future poll did not start");
+        }
         std::thread::yield_now();
     }
 
     olive_free_future(future);
-    assert_eq!(waiter.join().unwrap(), 0);
-    assert!(!super::sm_live().lock().unwrap().contains(&future));
+    assert!(super::sm_live().lock().unwrap().contains(&future));
+    EXCLUSIVE_POLL_RELEASE.store(true, Ordering::Release);
+    assert_eq!(waiter.join().unwrap(), 42);
+    wait_for_sm_free(future);
 }
 
 #[test]

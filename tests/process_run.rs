@@ -81,7 +81,7 @@ fn main():
     if output == -1:
         print("spawn failed")
         return
-    print(output.stdout.trim())
+    print(output.stdout.strip())
 "#;
     assert_both(source, "payload\n");
 }
@@ -157,7 +157,7 @@ fn command_run_does_not_wait_for_a_descendant_holding_stdout() {
         r#"import process
 
 fn main():
-    let output = process.shell("printf 'first'; sleep 3 & printf 'second'")
+    let output = process.shell("printf 'first'; sleep 10 & printf 'second'")
     if output == -1:
         print("spawn failed")
         return
@@ -167,7 +167,7 @@ fn main():
     );
 
     let started = Instant::now();
-    let output = run_olive(&case, Duration::from_secs(2));
+    let output = run_olive(&case, Duration::from_secs(8));
     assert!(
         output.status.success(),
         "stdout={} stderr={}",
@@ -175,7 +175,7 @@ fn main():
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(8),
         "direct child exit waited for descendant pipe closure"
     );
     assert_eq!(output.stdout, b"firstsecond\n0\n");

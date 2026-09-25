@@ -2,7 +2,7 @@ use crate::python::python_bindings::PyInterpreterConfig;
 use crate::python::python_noop;
 use crate::python::*;
 use std::os::raw::{c_int, c_void};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 const MAX_POOL: i32 = 64;
 
@@ -13,6 +13,11 @@ static POOL_ACTIVE: AtomicBool = AtomicBool::new(false);
 static POOL_EVER: AtomicBool = AtomicBool::new(false);
 static POOL_SIZE: AtomicI32 = AtomicI32::new(0);
 static NEXT_SLOT: AtomicI32 = AtomicI32::new(0);
+static POOL_EPOCH: AtomicU64 = AtomicU64::new(0);
+const POOL_CLOSING: usize = 1usize << (usize::BITS - 1);
+static POOL_USERS: AtomicUsize = AtomicUsize::new(POOL_CLOSING);
+static WORKER_THREAD_STATES: [AtomicPtr<c_void>; MAX_POOL as usize] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_POOL as usize];
 
 static mut INTERP_STATES: [*mut c_void; MAX_POOL as usize] =
     [std::ptr::null_mut(); MAX_POOL as usize];
@@ -24,6 +29,7 @@ const PY_INTERPRETER_CONFIG_OWN_GIL: c_int = 2;
 thread_local! {
     static SUBINTERP_SLOT: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static SUBINTERP_TS: std::cell::Cell<*mut c_void> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    static SUBINTERP_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static SUBINTERP_BORROWED_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
@@ -107,24 +113,51 @@ pub unsafe fn pool_ensure() -> bool {
         if SUBINTERP_BORROWED_DEPTH.with(|depth| depth.get() != 0) {
             return true;
         }
+        if !POOL_ACTIVE.load(Ordering::Acquire) {
+            return false;
+        }
+        loop {
+            let users = POOL_USERS.load(Ordering::Acquire);
+            if users & POOL_CLOSING != 0 {
+                return false;
+            }
+            if POOL_USERS
+                .compare_exchange_weak(users, users + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        let epoch = POOL_EPOCH.load(Ordering::Acquire);
+        SUBINTERP_EPOCH.with(|seen| {
+            if seen.get() != epoch {
+                SUBINTERP_SLOT.with(|slot| slot.set(-1));
+                SUBINTERP_TS.with(|ts| ts.set(std::ptr::null_mut()));
+                seen.set(epoch);
+            }
+        });
         let slot = SUBINTERP_SLOT.with(|s| s.get());
         if slot < 0 {
             let new_slot = assign_slot();
             if new_slot < 0 {
+                POOL_USERS.fetch_sub(1, Ordering::AcqRel);
                 return false;
             }
             SUBINTERP_SLOT.with(|s| s.set(new_slot));
             let interp = read_interp_state(new_slot as usize);
             if interp.is_null() {
                 SUBINTERP_SLOT.with(|s| s.set(-1));
+                POOL_USERS.fetch_sub(1, Ordering::AcqRel);
                 return false;
             }
             let ts = PY_THREAD_STATE_NEW(interp);
             if ts.is_null() {
                 SUBINTERP_SLOT.with(|s| s.set(-1));
+                POOL_USERS.fetch_sub(1, Ordering::AcqRel);
                 return false;
             }
             SUBINTERP_TS.with(|t| t.set(ts));
+            WORKER_THREAD_STATES[new_slot as usize].store(ts, Ordering::Release);
         }
         let ts = SUBINTERP_TS.with(|t| t.get());
         PY_EVAL_ACQUIRE_THREAD(ts);
@@ -141,6 +174,7 @@ pub unsafe fn pool_release() {
         if !ts.is_null() {
             PY_EVAL_RELEASE_THREAD(ts);
         }
+        POOL_USERS.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -221,6 +255,8 @@ pub unsafe fn pool_init() {
 
         POOL_SIZE.store(size, Ordering::Release);
         POOL_EVER.store(true, Ordering::Release);
+        POOL_EPOCH.fetch_add(1, Ordering::AcqRel);
+        POOL_USERS.store(0, Ordering::Release);
         POOL_ACTIVE.store(true, Ordering::Release);
     }
 }
@@ -231,6 +267,10 @@ pub unsafe fn pool_finalize() {
             return;
         }
         POOL_ACTIVE.store(false, Ordering::Release);
+        POOL_USERS.fetch_or(POOL_CLOSING, Ordering::AcqRel);
+        while POOL_USERS.load(Ordering::Acquire) != POOL_CLOSING {
+            std::thread::yield_now();
+        }
 
         let size = POOL_SIZE.load(Ordering::Acquire);
 
@@ -247,6 +287,12 @@ pub unsafe fn pool_finalize() {
 
             PY_EVAL_RELEASE_THREAD(main_ts);
             PY_EVAL_ACQUIRE_THREAD(init_ts);
+            let worker_ts =
+                WORKER_THREAD_STATES[i as usize].swap(std::ptr::null_mut(), Ordering::AcqRel);
+            if !worker_ts.is_null() {
+                PY_THREAD_STATE_CLEAR(worker_ts);
+                PY_THREAD_STATE_DELETE(worker_ts);
+            }
             PY_END_INTERPRETER(init_ts);
             PY_THREAD_STATE_SWAP(main_ts);
 

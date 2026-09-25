@@ -229,7 +229,9 @@ fn assert_both_succeed(src: &str, expected: &str) {
     let aot = run_aot(&dir, &liv_path);
     assert!(
         aot.status.success(),
-        "AOT failed: {}",
+        "AOT exited with {}. stdout: {} stderr: {}",
+        aot.status,
+        String::from_utf8_lossy(&aot.stdout),
         String::from_utf8_lossy(&aot.stderr)
     );
     assert_eq!(

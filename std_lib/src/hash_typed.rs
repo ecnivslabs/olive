@@ -340,76 +340,102 @@ pub(crate) fn hash_enum_key(v: i64) -> Option<u64> {
 /// elements in untyped keys. Inline immediates and bare scalars hash by word
 /// (deterministic encodings make equal values identical words); strings by
 /// content; boxes and enums structurally through their embedded descriptors;
-/// sequences recurse; anything else falls back to word identity (a safe miss
-/// for distinct instances, never a misread).
+/// sequences are walked iteratively; anything else falls back to word
+/// identity (a safe miss for distinct instances, never a misread).
 fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
-    if v == 0 {
-        return one(0);
+    enum Task {
+        Value(i64),
+        Sequence(usize),
+        Unordered(usize),
+        Pair,
     }
-    if v & 1 == 1 {
-        if (v & !1) > 0x10000 {
-            return hash_str(v);
+
+    let mut tasks = vec![Task::Value(v)];
+    let mut hashes = Vec::new();
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::Sequence(n) => {
+                let start = hashes.len() - n;
+                let result = seq(hashes.drain(start..));
+                hashes.push(result);
+            }
+            Task::Unordered(n) => {
+                let start = hashes.len() - n;
+                let result = commutative(hashes.drain(start..));
+                hashes.push(result);
+            }
+            Task::Pair => {
+                let value = hashes.pop().unwrap();
+                let key = hashes.pop().unwrap();
+                hashes.push(seq([key, value]));
+            }
+            Task::Value(word) => {
+                if word == 0 {
+                    hashes.push(one(0));
+                    continue;
+                }
+                if word & 1 == 1 {
+                    hashes.push(if (word & !1) > 0x10000 {
+                        hash_str(word)
+                    } else {
+                        one(word as u64)
+                    });
+                    continue;
+                }
+                if word & 7 != 0 || word < 0x1000 || !crate::is_active_object(word) {
+                    hashes.push(one(word as u64));
+                    continue;
+                }
+                if !visited.insert(word) {
+                    hashes.push(0);
+                    continue;
+                }
+                let kind = unsafe { *(word as *const i64) };
+                if kind == crate::struct_box::KIND_STRUCT_BOX {
+                    hashes.push(hash_struct_box_key(word).unwrap_or_else(|| one(word as u64)));
+                } else if kind == crate::KIND_ENUM {
+                    hashes.push(hash_enum_key(word).unwrap_or_else(|| one(word as u64)));
+                } else if (kind == crate::KIND_LIST || kind == crate::KIND_ANY_LIST)
+                    && crate::list::owns_list(word)
+                {
+                    let s = unsafe { &*(word as *const StableVec) };
+                    tasks.push(Task::Sequence(s.len));
+                    for i in (0..s.len).rev() {
+                        tasks.push(Task::Value(unsafe { *s.ptr.add(i) }));
+                    }
+                } else if kind == crate::KIND_SET && crate::set::owns_set(word) {
+                    let s = unsafe { &*(word as *const crate::OliveHashSet) };
+                    tasks.push(Task::Unordered(s.len));
+                    for i in (0..s.len).rev() {
+                        tasks.push(Task::Value(unsafe { *s.ptr.add(i) }));
+                    }
+                } else if kind == crate::KIND_OBJ && crate::obj::owns_obj(word) {
+                    let obj = unsafe { &*(word as *const crate::OliveObj) };
+                    tasks.push(Task::Unordered(obj.fields.len()));
+                    let entries: Vec<_> =
+                        obj.fields.iter().map(|(k, &value)| (k.0, value)).collect();
+                    for (key, value) in entries.into_iter().rev() {
+                        tasks.push(Task::Pair);
+                        tasks.push(Task::Value(value));
+                        tasks.push(Task::Value(key));
+                    }
+                } else if crate::is_kind(word, crate::KIND_BYTES) {
+                    let bytes = unsafe { &*(word as *const crate::bytes::OliveBytes) }.as_slice();
+                    hashes.push(one(hash_bytes(bytes)));
+                } else if (kind == crate::KIND_FLOAT
+                    || kind == crate::KIND_INT
+                    || kind == crate::KIND_U64)
+                    && crate::is_kind(word, kind)
+                {
+                    let b = unsafe { &*(word as *const crate::boxed::OliveBoxed) };
+                    hashes.push(seq([kind as u64, b.bits as u64]));
+                } else {
+                    hashes.push(one(word as u64));
+                }
+            }
         }
-        return one(v as u64);
     }
-    if v & 7 != 0 {
-        return one(v as u64);
-    }
-    if v < 0x1000 || !crate::is_active_object(v) {
-        return one(v as u64);
-    }
-    if !visited.insert(v) {
-        return 0;
-    }
-    let kind = unsafe { *(v as *const i64) };
-    if kind == crate::struct_box::KIND_STRUCT_BOX {
-        if let Some(h) = hash_struct_box_key(v) {
-            return h;
-        }
-        return one(v as u64);
-    }
-    if kind == crate::KIND_ENUM {
-        if let Some(h) = hash_enum_key(v) {
-            return h;
-        }
-        return one(v as u64);
-    }
-    if (kind == crate::KIND_LIST || kind == crate::KIND_ANY_LIST) && crate::list::owns_list(v) {
-        let (eptr, elen) = unsafe {
-            let s = &*(v as *const StableVec);
-            (s.ptr, s.len)
-        };
-        let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, visited));
-        return seq(parts);
-    }
-    if kind == crate::KIND_SET && crate::set::owns_set(v) {
-        let (eptr, elen) = unsafe {
-            let s = &*(v as *const crate::OliveHashSet);
-            (s.ptr, s.len)
-        };
-        let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, visited));
-        return commutative(parts);
-    }
-    if kind == crate::KIND_OBJ && crate::obj::owns_obj(v) {
-        let obj = unsafe { &*(v as *const crate::OliveObj) };
-        let parts = obj.fields.iter().map(|(k, &val)| {
-            let kh = hash_any_word(k.0, visited);
-            let vh = hash_any_word(val, visited);
-            seq([kh, vh])
-        });
-        return commutative(parts);
-    }
-    if crate::is_kind(v, crate::KIND_BYTES) {
-        let bytes = unsafe { &*(v as *const crate::bytes::OliveBytes) }.as_slice();
-        return one(hash_bytes(bytes));
-    }
-    if (kind == crate::KIND_FLOAT || kind == crate::KIND_INT || kind == crate::KIND_U64)
-        && crate::is_kind(v, kind)
-    {
-        let b = unsafe { &*(v as *const crate::boxed::OliveBoxed) };
-        return seq([kind as u64, b.bits as u64]);
-    }
-    one(v as u64)
+    hashes.pop().unwrap()
 }
 
 /// Whether `v` is a live sequence in a list slab, whose elements hash by
@@ -725,4 +751,29 @@ fn hash_enum(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashSet
         }
     }
     seq(parts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hash_seq_key;
+
+    #[test]
+    fn deep_untyped_sequence_keys_hash_without_stack_growth() {
+        fn nested_key(leaf: &str) -> i64 {
+            let mut key = crate::list::list_from_vec(vec![crate::olive_str_internal(leaf)]);
+            for _ in 0..2000 {
+                key = crate::list::list_from_vec(vec![key]);
+            }
+            key
+        }
+
+        let first = nested_key("same");
+        let equal = nested_key("same");
+        let different = nested_key("different");
+        assert_eq!(hash_seq_key(first), hash_seq_key(equal));
+        assert_ne!(hash_seq_key(first), hash_seq_key(different));
+        crate::olive_free_any(first);
+        crate::olive_free_any(equal);
+        crate::olive_free_any(different);
+    }
 }

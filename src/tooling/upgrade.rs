@@ -865,7 +865,14 @@ mod tests {
     #[test]
     fn target_lib_file_format() {
         let file = target_lib_file().unwrap();
-        assert!(file.starts_with("libolive_std"));
+        let expected = if cfg!(target_os = "windows") {
+            "olive_std.dll"
+        } else if cfg!(target_os = "macos") {
+            "libolive_std.dylib"
+        } else {
+            "libolive_std.so"
+        };
+        assert_eq!(file, expected);
     }
 
     #[test]

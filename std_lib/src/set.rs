@@ -688,10 +688,10 @@ pub extern "C" fn olive_set_sym_diff_typed(a: i64, b: i64, key_desc: i64) -> i64
 mod tests {
     use super::*;
 
-    /// 4-aligned descriptor buffer for `_typed` key ops. The key path strips
-    /// the low 2 tag bits (`str_body`, a no-op for 4-aligned codegen data);
+    /// Aligned descriptor buffer for `_typed` key ops. The key path strips
+    /// the low 3 tag bits (`str_body`, a no-op for aligned codegen data);
     /// a plain `[u8; N]` local is only 1-aligned and would be corrupted.
-    #[repr(align(4))]
+    #[repr(align(8))]
     struct AlignedDesc<const N: usize>([u8; N]);
 
     fn new_set() -> i64 {
@@ -1001,22 +1001,23 @@ mod tests {
         };
         let stored = mk();
         let set = olive_set_new(4);
-        // The typed entries carry the *element* descriptor (from the value
-        // argument), not the set descriptor: skip the D_SET tag. It also
-        // drives structural hashing, so insertion goes through the typed
-        // add like the production path.
-        let elem_desc = unsafe { desc.0.as_ptr().add(1) } as i64;
-        crate::hash_typed::olive_set_add_typed(set, stored, elem_desc);
-        let arg = mk();
-        let out = crate::hash_typed::with_key_descriptor(elem_desc, || {
-            olive_set_remove_inner(set, arg, Some(elem_desc))
+        crate::hash_typed::with_owned_sub_descriptor(desc.0.as_ptr(), 1, |elem_desc| {
+            crate::hash_typed::olive_set_add_typed(set, stored, elem_desc);
+            let arg = mk();
+            assert_eq!(
+                crate::hash_typed::olive_set_contains_typed(set, arg, elem_desc),
+                1
+            );
+            let out = crate::hash_typed::with_key_descriptor(elem_desc, || {
+                olive_set_remove_inner(set, arg, Some(elem_desc))
+            });
+            assert_eq!(out, arg);
+            assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
+            assert!(!slot_is_live(stored));
+            assert!(slot_is_live(arg));
+            crate::free_typed::olive_free_typed(arg, elem_desc);
+            assert!(!slot_is_live(arg));
         });
-        assert_eq!(out, arg);
-        assert!(!slot_is_live(stored));
-        assert!(slot_is_live(arg));
-        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
-        crate::free_typed::olive_free_typed(arg, elem_desc);
-        assert!(!slot_is_live(arg));
         olive_free_set(set);
     }
 

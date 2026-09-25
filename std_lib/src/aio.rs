@@ -39,7 +39,7 @@ fn try_acquire_sm_poll(future: i64) -> Option<SmPollGuard> {
     let acquired = unsafe { &(*(future as *const OliveSmFuture)).poll_lock }
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_ok();
-    acquired.then_some(SmPollGuard(future))
+    acquired.then(|| SmPollGuard(future))
 }
 
 impl Drop for OliveTask {
@@ -605,9 +605,7 @@ fn executor_publish(
         let waiters = std::mem::take(&mut *guard);
         drop(guard);
         map.remove(&task.sm_future);
-        if task.retired.load(Ordering::Acquire) || !waiters.is_empty() {
-            completed.insert(task.sm_future, task.clone());
-        }
+        completed.insert(task.sm_future, task.clone());
         waiters
     };
     drop(completed);
