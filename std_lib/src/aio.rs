@@ -350,14 +350,14 @@ fn executor_complete_waker(
     true
 }
 
-fn wait_for_plain_child(task: &Arc<OliveTask>, shared: &FutureShared) -> bool {
+fn wait_for_plain_child(task: &Arc<OliveTask>, shared: &FutureShared) {
     let mut state = shared.state.lock().unwrap();
     loop {
         match &*state {
-            FutureState::Ready(_) => return true,
+            FutureState::Ready(_) => return,
             FutureState::Pending => {
                 if task_cancelled(task) {
-                    return false;
+                    return;
                 }
                 let (next, _) = shared
                     .cvar
@@ -378,7 +378,9 @@ fn park_combinator_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, child_p
         KIND_FUTURE => {
             let child = unsafe { &*(child_ptr as *const OliveFuture) };
             let shared = unsafe { &*(child.shared as *const FutureShared) };
-            wait_for_plain_child(task, shared)
+            wait_for_plain_child(task, shared);
+            // This wait consumes the notification; no waiter will enqueue the parent.
+            false
         }
         KIND_SM_FUTURE => {
             let Some(child) = executor_get_or_create_active_task(ex, child_ptr) else {

@@ -468,6 +468,30 @@ fn pending_combinators_park_instead_of_requeueing() {
 }
 
 #[test]
+fn plain_future_combinators_rerun_after_waiting() {
+    let ex = test_executor();
+    let parent_future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: 0,
+        frame: 0,
+        cancelled: AtomicI64::new(0),
+        result_desc: 0,
+        frame_size: 0,
+        cached: 0,
+        terminal: AtomicBool::new(false),
+        poll_lock: AtomicBool::new(false),
+    };
+    let parent = executor_get_or_create_task(&ex, &parent_future as *const OliveSmFuture as i64);
+    let child = olive_make_future(0);
+    let children = crate::list::list_from_vec(vec![child, child]);
+
+    assert_eq!(park_combinator(&ex, &parent, children), DriveOutcome::Rerun);
+
+    crate::olive_free_list(children);
+    olive_free_future(child);
+}
+
+#[test]
 fn invalid_future_lists_are_safe() {
     let _guard = CANCEL_LOCK.lock().unwrap();
     let gathered = olive_gather(2);
