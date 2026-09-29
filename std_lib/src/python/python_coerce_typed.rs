@@ -70,13 +70,13 @@ unsafe fn py_to_string_key(value: PyObject) -> Option<i64> {
 unsafe fn snapshot_sequence(value: PyObject) -> Option<Vec<PyObject>> {
     unsafe {
         let ty = crate::python::python_coerce::raw_ob_type(value);
-        let is_list = !ty.is_null()
-            && !PY_LIST_TYPE.is_null()
-            && (ty == PY_LIST_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_LIST_TYPE) != 0);
-        let is_tuple = !ty.is_null()
-            && !PY_TUPLE_TYPE.is_null()
-            && (ty == PY_TUPLE_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_TUPLE_TYPE) != 0);
-        let (source, owned) = if is_list || is_tuple {
+        // Exact types only here for the same reason as
+        // `olive_py_to_list_tagged_internal`: a subclass may override
+        // `__getitem__`, so it snapshots through `PySequence_List` instead of
+        // the direct `ob_item` accessors.
+        let is_list_exact = !ty.is_null() && !PY_LIST_TYPE.is_null() && ty == PY_LIST_TYPE;
+        let is_tuple_exact = !ty.is_null() && !PY_TUPLE_TYPE.is_null() && ty == PY_TUPLE_TYPE;
+        let (source, owned) = if is_list_exact || is_tuple_exact {
             (value, false)
         } else {
             let list = PY_SEQUENCE_LIST(value);
@@ -94,7 +94,7 @@ unsafe fn snapshot_sequence(value: PyObject) -> Option<Vec<PyObject>> {
         }
         let mut items = Vec::with_capacity(len as usize);
         for i in 0..len {
-            let item = if is_list || owned {
+            let item = if is_list_exact || owned {
                 PY_LIST_GET_ITEM(source, i)
             } else {
                 PY_TUPLE_GET_ITEM(source, i)

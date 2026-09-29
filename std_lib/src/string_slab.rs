@@ -40,10 +40,265 @@ pub fn str_is_literal(ptr: i64) -> bool {
     ptr & STR_LITERAL != 0
 }
 
+/// Upper bound for a literal byte length. Real literals are embedded program
+/// text; anything larger is a forged header, and bounding keeps the mapped
+/// range walk below from iterating an absurd page count.
+pub(crate) const MAX_LITERAL_LEN: usize = 1 << 28;
+
+/// Upper bound for the foreign C-string fallback scan. A longer NUL-free
+/// run is treated as corrupt rather than walked without end.
+pub(crate) const MAX_FOREIGN_LEN: usize = 1 << 24;
+
+fn page_size() -> usize {
+    static PS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PS.get_or_init(|| unsafe {
+        let ps = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+        if ps.is_power_of_two() && ps >= 4096 {
+            ps
+        } else {
+            4096
+        }
+    })
+}
+
+/// Whether the page containing `addr` is mapped readable, probed with
+/// `msync` so an unmapped forged address reports false instead of faulting.
+/// Never dereferences the address itself.
+pub(crate) fn page_mapped(addr: usize) -> bool {
+    if addr < 0x1000 {
+        return false;
+    }
+    let ps = page_size();
+    let page = addr & !(ps - 1);
+    unsafe {
+        if libc::msync(page as *mut libc::c_void, 1, libc::MS_ASYNC) == 0 {
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Whether every page in `[start, start+len)` is mapped. Bounds `len` first
+/// so a forged huge length fails fast without walking millions of pages.
+fn range_mapped(start: usize, len: usize, cap: usize) -> bool {
+    if len > cap {
+        return false;
+    }
+    if start == 0 {
+        return false;
+    }
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    if end < start {
+        return false;
+    }
+    let ps = page_size();
+    let mut page = start & !(ps - 1);
+    let last = if end == start {
+        page
+    } else {
+        (end - 1) & !(ps - 1)
+    };
+    loop {
+        if !page_mapped(page) {
+            return false;
+        }
+        if page == last {
+            return true;
+        }
+        let Some(next) = page.checked_add(ps) else {
+            return false;
+        };
+        page = next;
+    }
+}
+
+/// Whether `body` belongs to any live string class slab: this thread's pool,
+/// the active escape arena, its source, or the shared global arena. Tells a
+/// heap string body from a list, box, or forged address that happens to sit
+/// inside some other slab's chunk.
+pub fn owns_str_body(body: i64) -> bool {
+    if body == 0 {
+        return false;
+    }
+    let addr = body as usize;
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            if (*active).str_slabs.iter().flatten().any(|s| s.owns_addr(addr)) {
+                return true;
+            }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null()
+                && source != active
+                && (*source)
+                    .str_slabs
+                    .iter()
+                    .flatten()
+                    .any(|s| s.owns_addr(addr))
+            {
+                return true;
+            }
+        }
+    }
+    if STR_SLABS.with(|s| unsafe {
+        (&*s.get())
+            .classes
+            .iter()
+            .flatten()
+            .any(|slab| slab.owns_addr(addr))
+    }) {
+        return true;
+    }
+    crate::slab::global_str_owns_addr(addr)
+}
+
+/// Validated heap-string length: membership, liveness, string-slab ownership,
+/// and a header whose capacity class and length agree. Reads the header only
+/// after the chunk lookup proves the slot address is mapped, so a forged word
+/// returns `None` instead of faulting. Called before any header or body
+/// dereference on the heap path.
+pub(crate) fn live_heap_str_len(body: i64) -> Option<usize> {
+    if body == 0 || body & 7 != 0 {
+        return None;
+    }
+    if crate::slab::slab_membership(body).is_none() {
+        return None;
+    }
+    if !crate::slab::slot_is_live(body) {
+        return None;
+    }
+    if !owns_str_body(body) {
+        return None;
+    }
+    let header_val = unsafe { *(body as *const usize).sub(2) };
+    let cap_idx = header_val >> 48;
+    if cap_idx >= 32 {
+        return None;
+    }
+    let cap = 1usize.checked_shl(cap_idx as u32)?;
+    if cap < 8 {
+        return None;
+    }
+    let len = header_val & LEN_MASK;
+    let need = len.checked_add(1)?;
+    if need > cap {
+        return None;
+    }
+    Some(len)
+}
+
+/// Whether a tagged word is a live heap string. Unified with
+/// `live_heap_str_len` so every classifier agrees.
+#[inline]
+pub fn is_live_heap_str(ptr: i64) -> bool {
+    if !str_is_heap(ptr) {
+        return false;
+    }
+    live_heap_str_len(str_body(ptr)).is_some()
+}
+
+/// Validated literal length: header pages mapped, zero high header word,
+/// sane length, and a fully mapped body. Returns `None` for any forged word
+/// without faulting.
+pub(crate) fn literal_str_len_validated(body: i64) -> Option<usize> {
+    if body == 0 || body & 7 != 0 {
+        return None;
+    }
+    if body <= 0x10000 {
+        return None;
+    }
+    if crate::slab::ptr_in_slab_span(body) {
+        return None;
+    }
+    let body_addr = body as usize;
+    if !range_mapped(body_addr.wrapping_sub(16), 16, 16) {
+        return None;
+    }
+    let (hi, len) = unsafe {
+        (
+            *((body_addr - 16) as *const u64),
+            *((body_addr - 8) as *const usize),
+        )
+    };
+    if hi != 0 {
+        return None;
+    }
+    if len > MAX_LITERAL_LEN {
+        return None;
+    }
+    if !range_mapped(body_addr, len.saturating_add(1), MAX_LITERAL_LEN + 1) {
+        return None;
+    }
+    if len > 0 && unsafe { *((body_addr + len) as *const u8) } != 0 {
+        return None;
+    }
+    Some(len)
+}
+
+/// Bounded foreign C-string length: per-page mapped probe with an explicit
+/// cap, so an arbitrary forged pointer yields `None` instead of an unbounded
+/// `strlen` fault.
+pub(crate) fn foreign_str_len_bounded(body: i64) -> Option<usize> {
+    if body == 0 || body & 7 != 0 {
+        return None;
+    }
+    if body <= 0x10000 {
+        return None;
+    }
+    if crate::slab::ptr_in_slab_span(body) {
+        return None;
+    }
+    let mut addr = body as usize;
+    let start = addr;
+    let ps = page_size();
+    let mut checked_page = usize::MAX;
+    while addr.wrapping_sub(start) < MAX_FOREIGN_LEN {
+        let page = addr & !(ps - 1);
+        if page != checked_page {
+            if !page_mapped(addr) {
+                return None;
+            }
+            checked_page = page;
+        }
+        if unsafe { *(addr as *const u8) } == 0 {
+            return Some(addr - start);
+        }
+        addr += 1;
+    }
+    None
+}
+
 /// Byte capacity class for `need` content-plus-nul bytes, one machine word min.
+/// Faults instead of wrapping or panicking when `need` overflows the address
+/// space or exceeds the 32 size classes. No silent truncation.
 #[inline]
 fn class_bytes(need: usize) -> usize {
-    need.next_power_of_two().max(8)
+    class_bytes_opt(need)
+        .unwrap_or_else(|| crate::panic::abort("string length overflows address space", None))
+}
+
+pub(crate) fn class_bytes_opt(need: usize) -> Option<usize> {
+    let pow = need.checked_next_power_of_two()?;
+    let cap = pow.max(8);
+    if cap.trailing_zeros() as usize >= 32 {
+        return None;
+    }
+    Some(cap)
+}
+
+const LEN_MASK: usize = 0xFFFFFFFFFFFF;
+
+/// Checked `a + b` for concatenation lengths. Faults, never wraps.
+fn checked_concat_len(a_len: usize, b_len: usize) -> usize {
+    concat_len_opt(a_len, b_len)
+        .unwrap_or_else(|| crate::panic::abort("string concat overflows length", None))
+}
+
+pub(crate) fn concat_len_opt(a_len: usize, b_len: usize) -> Option<usize> {
+    a_len.checked_add(b_len)
 }
 
 #[inline]
@@ -106,7 +361,10 @@ fn with_class_slab<T>(cap: usize, f: impl FnOnce(&mut GenSlab) -> T) -> T {
 /// the body pointer tagged with the low string bit.
 pub fn str_alloc(bytes: &[u8]) -> i64 {
     let len = bytes.len();
-    let cap = class_bytes(len + 1);
+    let need = len
+        .checked_add(1)
+        .unwrap_or_else(|| crate::panic::abort("string length overflows address space", None));
+    let cap = class_bytes(need);
     with_class_slab(cap, |slab| {
         let (body, _) = slab.alloc();
         unsafe {
@@ -132,8 +390,11 @@ pub extern "C" fn olive_str_alloc(ptr: *const u8, len: usize) -> i64 {
 /// Same as `str_alloc`, but writes two slices back to back without first
 /// concatenating them into an intermediate buffer.
 pub fn str_alloc_two(a: &[u8], b: &[u8]) -> i64 {
-    let len = a.len() + b.len();
-    let cap = class_bytes(len + 1);
+    let len = checked_concat_len(a.len(), b.len());
+    let need = len
+        .checked_add(1)
+        .unwrap_or_else(|| crate::panic::abort("string concat overflows length", None));
+    let cap = class_bytes(need);
     with_class_slab(cap, |slab| {
         let (body, _) = slab.alloc();
         unsafe {
@@ -208,9 +469,8 @@ fn str_free_in(ptr: i64, _is_global: bool) {
     }
 
     if !crate::slab::active_slab_is_global()
-        && crate::slab::global_str_owns_addr(body_addr, cap_idx)
+        && crate::slab::global_str_free_if_owned(body_addr, cap_idx)
     {
-        crate::slab::global_str_free(body_addr, cap_idx);
         return;
     }
 
@@ -241,13 +501,35 @@ pub fn str_concat_inplace_with(
     if body == 0 || !known_heap.unwrap_or_else(|| str_is_heap(l)) {
         return None;
     }
-    let l_len = l_bytes.len();
-    let r_len = r_bytes.len();
-    let new_len = l_len + r_len;
+    if crate::slab::slab_membership(body).is_none() {
+        return None;
+    }
+    if !crate::slab::slot_is_live(body) {
+        return None;
+    }
     let header_val = unsafe { *(body as *const usize).sub(2) };
     let cap_idx = header_val >> 48;
+    if cap_idx >= 32 {
+        return None;
+    }
     let old_cap = 1usize << cap_idx;
-    let new_cap = class_bytes(new_len + 1);
+    if old_cap < 8 {
+        return None;
+    }
+    let header_len = header_val & LEN_MASK;
+    if header_len.checked_add(1).is_none_or(|need| need > old_cap) {
+        return None;
+    }
+    if l_bytes.len() != header_len {
+        return None;
+    }
+    let l_len = l_bytes.len();
+    let r_len = r_bytes.len();
+    let new_len = checked_concat_len(l_len, r_len);
+    let need = new_len
+        .checked_add(1)
+        .unwrap_or_else(|| crate::panic::abort("string concat overflows length", None));
+    let new_cap = class_bytes(need);
     if new_cap <= old_cap {
         unsafe {
             std::ptr::copy_nonoverlapping(r_bytes.as_ptr(), (body as *mut u8).add(l_len), r_len);
@@ -521,5 +803,79 @@ mod tests {
             "hello world this is a long tail"
         );
         str_free(res);
+    }
+
+    #[test]
+    fn concat_len_opt_rejects_overflow() {
+        assert_eq!(concat_len_opt(3, 4), Some(7));
+        assert_eq!(concat_len_opt(0, 0), Some(0));
+        assert_eq!(concat_len_opt(usize::MAX, 1), None);
+        assert_eq!(concat_len_opt(usize::MAX, usize::MAX), None);
+    }
+
+    #[test]
+    fn class_bytes_opt_rejects_overflow() {
+        assert_eq!(class_bytes_opt(1), Some(8));
+        assert_eq!(class_bytes_opt(8), Some(8));
+        assert_eq!(class_bytes_opt(9), Some(16));
+        assert_eq!(class_bytes_opt(usize::MAX), None);
+        assert_eq!(class_bytes_opt(1usize << 32), None);
+    }
+
+    #[test]
+    fn inplace_refuses_dead_slot() {
+        let a = str_alloc(b"ab");
+        str_free(a);
+        assert!(
+            str_concat_inplace(a, b"ab", b"cd").is_none(),
+            "dead slot must not mutate in place"
+        );
+    }
+
+    #[test]
+    fn inplace_refuses_literal_and_foreign() {
+        let c = std::ffi::CString::new("lit").unwrap();
+        let raw = c.into_raw();
+        let foreign = raw as i64;
+        assert!(str_concat_inplace(foreign | 1, b"lit", b"!").is_none());
+        let _ = unsafe { std::ffi::CString::from_raw(raw) };
+    }
+
+    #[test]
+    fn inplace_refuses_forged_heap_outside_any_slab() {
+        let forged = 0x1_0000_i64 | STR_TAG | STR_HEAP;
+        assert!(str_concat_inplace(forged, b"x", b"y").is_none());
+    }
+
+    #[test]
+    fn inplace_refuses_corrupt_header_size_class() {
+        let p = str_alloc(b"abc");
+        let body = str_body(p);
+        let orig: usize = unsafe { *(body as *const usize).sub(2) };
+        unsafe { *(body as *mut usize).sub(2) = (orig & LEN_MASK) | (33usize << 48) };
+        assert!(str_concat_inplace(p, b"abc", b"d").is_none());
+        unsafe { *(body as *mut usize).sub(2) = orig };
+        str_free(p);
+    }
+
+    #[test]
+    fn inplace_refuses_corrupt_header_length_exceeds_capacity() {
+        let p = str_alloc(b"abc");
+        let body = str_body(p);
+        let orig: usize = unsafe { *(body as *const usize).sub(2) };
+        let cap_idx = orig >> 48;
+        let old_cap = 1usize << cap_idx;
+        unsafe { *(body as *mut usize).sub(2) = (old_cap | (cap_idx << 48)) as usize };
+        assert!(str_concat_inplace(p, b"abc", b"d").is_none());
+        unsafe { *(body as *mut usize).sub(2) = orig };
+        str_free(p);
+    }
+
+    #[test]
+    fn inplace_refuses_stale_slice_length_mismatch() {
+        let p = str_alloc(b"abc");
+        assert!(str_concat_inplace(p, b"ab", b"d").is_none());
+        assert_eq!(crate::string::olive_str_from_ptr(p), "abc");
+        str_free(p);
     }
 }

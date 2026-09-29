@@ -51,6 +51,13 @@ pub static mut PY_LONG_AS_UNSIGNED_LONG_LONG: unsafe extern "C" fn(PyObject) -> 
 pub static mut PY_NUMBER_LONG: unsafe extern "C" fn(PyObject) -> PyObject = noop_number_long;
 pub static mut PY_FLOAT_AS_DOUBLE: unsafe extern "C" fn(PyObject) -> c_double = noop_as_double;
 pub static mut PY_UNICODE_AS_UTF8: unsafe extern "C" fn(PyObject) -> *const c_char = noop_as_utf8;
+pub static mut PY_UNICODE_AS_UTF8_STRING: unsafe extern "C" fn(PyObject) -> PyObject =
+    noop_call_1;
+pub static mut PY_UNICODE_DECODE_UTF8: unsafe extern "C" fn(
+    *const c_char,
+    isize,
+    *const c_char,
+) -> PyObject = noop_decode_utf8;
 pub static mut PY_LONG_FROM_LONG: unsafe extern "C" fn(c_long) -> PyObject = noop_from_long;
 pub static mut PY_LONG_FROM_LONG_LONG: unsafe extern "C" fn(i64) -> PyObject = noop_from_long_long;
 pub static mut PY_LONG_FROM_UNSIGNED_LONG_LONG: unsafe extern "C" fn(u64) -> PyObject =
@@ -88,16 +95,20 @@ pub unsafe fn py_long_from_u64(val: u64) -> PyObject {
 
 #[inline]
 pub unsafe fn py_u64_from_python(obj: PyObject) -> Option<u64> {
-    let had_error = unsafe { !PY_ERR_OCCURRED().is_null() };
-    let value = unsafe { PY_LONG_AS_UNSIGNED_LONG_LONG(obj) };
-    if had_error {
-        return Some(value);
-    }
-    if unsafe { !PY_ERR_OCCURRED().is_null() } {
-        unsafe { PY_ERR_CLEAR() };
-        None
-    } else {
-        Some(value)
+    unsafe {
+        // Stale-safe: a leftover error from an earlier call would make a
+        // valid value read as a failure (or a failure as success), so drop
+        // it before converting and judge only what this call sets.
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+        }
+        let value = PY_LONG_AS_UNSIGNED_LONG_LONG(obj);
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+            None
+        } else {
+            Some(value)
+        }
     }
 }
 

@@ -141,8 +141,8 @@ fn eq_any_words(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> bool {
     if a == 0 || b == 0 {
         return false;
     }
-    let a_str = a & 1 == 1 && (a & !1) > 0x10000;
-    let b_str = b & 1 == 1 && (b & !1) > 0x10000;
+    let a_str = crate::string::is_live_str_word(a);
+    let b_str = crate::string::is_live_str_word(b);
     if a_str || b_str {
         if a_str && b_str {
             return crate::olive_str_eq(a, b) != 0;

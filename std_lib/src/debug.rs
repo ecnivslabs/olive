@@ -193,7 +193,7 @@ pub extern "C" fn olive_debug_any_decode(val: i64, out: *mut i64) -> i64 {
         crate::boxed::TAG_INT => (1, val >> 3),
         crate::boxed::TAG_BOOL => (2, val >> 3),
         crate::boxed::TAG_NULL => (0, 0),
-        _ if val & 1 == 1 => (4, val),
+        _ if crate::string::is_live_str_word(val) => (4, val),
         _ if !crate::is_active_object(val) => (5, val),
         _ => {
             let kind = unsafe { *(val as *const i64) };

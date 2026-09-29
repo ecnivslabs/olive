@@ -66,19 +66,49 @@ fn make_result(ok: bool, payload: i64) -> i64 {
     })
 }
 
-/// Releases a result nobody consumed. `olive_free_any` classifies every wire
+/// Releases a result nobody consumed. Triple-checked like every other free
+/// entry: membership, result ownership, then liveness, all before the
+/// payload word is read. `olive_free_any` classifies every wire
 /// word (tagged string, immediate, slab body) and no-ops on what it doesn't
 /// own, so the payload needs no gating of its own -- gating on
 /// `is_active_object` here would leak `Err` message strings, whose tagged
-/// pointers never classify as slab bodies.
+/// pointers never classify as slab bodies. The slot detach plus slot free
+/// run under the single arena lock on the global path; the payload frees
+/// after the lock is released.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_result(ptr: i64) {
-    if !crate::is_kind(ptr, KIND_RESULT) {
+    if ptr == 0 {
         return;
     }
-    let payload = unsafe { (*(ptr as *const OliveResult)).payload };
-    free_slot(ptr);
-    crate::olive_free_any(payload);
+    let Some(is_global) = crate::slab::slab_membership(ptr) else {
+        return;
+    };
+    let payload = if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_result_inner(ptr))
+    } else {
+        free_result_inner(ptr)
+    };
+    if let Some(payload) = payload {
+        crate::olive_free_any(payload);
+    }
+}
+
+/// Triple-checked body: ownership then liveness, both before the kind and
+/// payload words are read. Frees the slot and hands the payload out for the
+/// caller to release outside any arena lock.
+fn free_result_inner(ptr: i64) -> Option<i64> {
+    if !crate::slab::check_owned_live(ptr, owns_result) {
+        return None;
+    }
+    let (kind, payload) = unsafe {
+        let res = &*(ptr as *const OliveResult);
+        (res.kind, res.payload)
+    };
+    if kind != KIND_RESULT {
+        return None;
+    }
+    free_result_slot_local(ptr);
+    Some(payload)
 }
 
 fn free_result_slot_local(ptr: i64) {
@@ -207,8 +237,10 @@ pub extern "C" fn olive_result_err_msg(r: i64) -> i64 {
 fn free_slot(ptr: i64) {
     match crate::slab::slab_membership(ptr) {
         None => {}
-        Some(true) => crate::slab::with_escape_arena(|| free_result_slot_local(ptr)),
-        Some(false) => free_result_slot_local(ptr),
+        Some(true) if !crate::slab::in_escape_arena() => {
+            crate::slab::with_escape_arena(|| free_result_slot_local(ptr))
+        }
+        Some(_) => free_result_slot_local(ptr),
     }
 }
 

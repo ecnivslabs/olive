@@ -345,9 +345,7 @@ fn copy_str(val: i64) -> i64 {
     if val & 1 == 0 {
         return val;
     }
-    if crate::string_slab::str_is_heap(val)
-        && crate::slab::ptr_is_slab_body(crate::string_slab::str_body(val))
-    {
+    if crate::string_slab::is_live_heap_str(val) {
         return crate::olive_copy(val);
     }
     val

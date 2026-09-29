@@ -381,13 +381,24 @@ pub extern "C" fn olive_list_all_any(ptr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
     if list_ptr == 0 {
+        crate::free_any_word(val);
+        return;
+    }
+    if crate::slab::slab_membership(list_ptr).is_none() || !owns_list(list_ptr) {
+        crate::free_any_word(val);
+        return;
+    }
+    if !crate::slab::slot_is_live(list_ptr) {
+        crate::free_any_word(val);
         return;
     }
     let s = unsafe { &mut *(list_ptr as *mut StableVec) };
-    if (idx as usize) < s.len {
-        unsafe {
-            *s.ptr.add(idx as usize) = val;
-        }
+    if idx < 0 || (idx as usize) >= s.len {
+        crate::free_any_word(val);
+        return;
+    }
+    unsafe {
+        *s.ptr.add(idx as usize) = val;
     }
 }
 
@@ -523,7 +534,7 @@ pub extern "C" fn olive_list_sort_any(list_ptr: i64) -> i64 {
     let mut has_float = false;
     let mut has_str = false;
     for &w in words.iter() {
-        if crate::string::is_interned_char(w) || (w & 1 == 1 && (w & !1) > 0x10000) {
+        if crate::string::is_live_str_word(w) {
             has_str = true;
         } else if w & crate::boxed::TAG_MASK == crate::boxed::TAG_NULL {
             sort_unorderable(w);
@@ -1106,18 +1117,35 @@ pub extern "C" fn olive_free_list(ptr: i64) {
     let Some(is_global) = crate::slab::slab_membership(ptr) else {
         return;
     };
+    if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_list_inner(ptr, true));
+    } else {
+        free_list_inner(ptr, is_global);
+    }
+}
+
+/// Triple-checked body shared by both paths: ownership (list, or set for the
+/// `KIND_SET` redirect) then liveness, both before any header read. The
+/// global path runs the whole walk plus the slot free inside the single
+/// arena lock; the local path needs no lock.
+fn free_list_inner(ptr: i64, is_global: bool) {
+    if !crate::slab::check_owned_live(ptr, |p| owns_list(p) || crate::set::owns_set(p)) {
+        return;
+    }
+    let kind = unsafe { *(ptr as *const i64) };
+    if kind == KIND_SET {
+        return crate::set::olive_free_set(ptr);
+    }
+    if kind != KIND_LIST && kind != KIND_ANY_LIST {
+        return;
+    }
     unsafe {
         let s = &mut *(ptr as *mut StableVec);
-        if s.kind == KIND_SET {
-            return crate::set::olive_free_set(ptr);
+        for i in 0..s.len {
+            let elem = *s.ptr.add(i);
+            crate::free_any_word(elem);
         }
-        if crate::slab::slot_is_live(ptr) {
-            for i in 0..s.len {
-                let elem = *s.ptr.add(i);
-                crate::free_any_word(elem);
-            }
-            settle_list_buffer(ptr);
-        }
+        settle_list_buffer(ptr);
         free_list_slot_raw_with(ptr, Some(is_global));
     }
 }
@@ -1213,7 +1241,9 @@ pub(crate) fn free_list_slot_raw(ptr: i64) {
 /// `ptr` a moment ago (e.g. `olive_free_list`'s own span check).
 pub(crate) fn free_list_slot_raw_with(ptr: i64, known_global: Option<bool>) {
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
-    if is_global {
+    if crate::slab::in_escape_arena() {
+        free_list_slot_raw_local(ptr);
+    } else if is_global {
         crate::slab::with_escape_arena(|| free_list_slot_raw_local(ptr));
     } else {
         free_list_slot_raw_local(ptr);
@@ -1235,10 +1265,16 @@ fn free_list_slot_raw_local(ptr: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new_reuse(old_ptr: i64, n_len: i64, bump: i64) -> i64 {
+    let n = n_len.max(0) as usize;
     if old_ptr == 0 {
-        return olive_list_new(n_len);
+        return olive_list_new(n as i64);
     }
-    let n = n_len as usize;
+    if crate::slab::slab_membership(old_ptr).is_none() || !owns_list(old_ptr) {
+        return olive_list_new(n as i64);
+    }
+    if !crate::slab::slot_is_live(old_ptr) {
+        return olive_list_new(n as i64);
+    }
     if bump != 0 {
         unsafe {
             let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
@@ -1303,15 +1339,10 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
     let mut derived = false;
     let mut actual_list_ptr = list_ptr;
 
-    // A tagged pointer with a high address is a string: iterate its characters.
-    // Untagged interned chars (`s[i]`) are static one-character strings with
-    // the same single step. Anything else that is not a live heap object
-    // (scalars, dangling words) yields an empty iterator instead of
-    // dereferencing the word as a container header.
-    if list_ptr != 0
-        && ((list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000
-            || crate::string::is_interned_char(list_ptr))
-    {
+    // A live string word iterates its characters. Anything else that is not
+    // a live heap object (scalars, dangling words) yields an empty iterator
+    // instead of dereferencing the word as a container header.
+    if list_ptr != 0 && crate::string::is_live_str_word(list_ptr) {
         actual_list_ptr = crate::string::olive_str_chars(list_ptr);
         derived = true;
     } else if list_ptr != 0 && crate::is_active_object(list_ptr) {
@@ -1372,10 +1403,7 @@ pub extern "C" fn olive_iter_typed(list_ptr: i64, iter_desc: i64) -> i64 {
     let mut snapshot_desc = 0i64;
     let mut actual_list_ptr = list_ptr;
 
-    if list_ptr != 0
-        && ((list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000
-            || crate::string::is_interned_char(list_ptr))
-    {
+    if list_ptr != 0 && crate::string::is_live_str_word(list_ptr) {
         actual_list_ptr = crate::string::olive_str_chars(list_ptr);
         derived = true;
     } else if list_ptr != 0 && crate::is_active_object(list_ptr) {
@@ -1434,6 +1462,11 @@ pub extern "C" fn olive_free_iter(ptr: i64) {
         unsafe {
             let it = &*(ptr as *const OliveIter);
             if it.is_py && it.list_ptr != 0 {
+                if it.has_peeked && it.py_peeked != 0 {
+                    crate::python::with_gil(|| {
+                        crate::python::PY_DEC_REF(it.py_peeked as *mut libc::c_void);
+                    });
+                }
                 crate::python::olive_py_decref(it.list_ptr as *mut libc::c_void);
             } else if it.derived && it.list_ptr != 0 {
                 if it.snapshot_desc != 0 {
@@ -1446,8 +1479,10 @@ pub extern "C" fn olive_free_iter(ptr: i64) {
     }
     match crate::slab::slab_membership(ptr) {
         None => {}
-        Some(true) => crate::slab::with_escape_arena(|| free_iter_slot_local(ptr)),
-        Some(false) => free_iter_slot_local(ptr),
+        Some(true) if !crate::slab::in_escape_arena() => {
+            crate::slab::with_escape_arena(|| free_iter_slot_local(ptr))
+        }
+        Some(_) => free_iter_slot_local(ptr),
     }
 }
 
@@ -1507,12 +1542,23 @@ pub extern "C" fn olive_has_next(iter_ptr: i64) -> i64 {
     }
     if it.is_py {
         if it.has_peeked {
-            return if it.py_peeked != 0 { 1 } else { 0 };
+            return 1;
         }
-        it.py_peeked =
-            crate::python::python_iter::olive_py_iter_next(it.list_ptr as *mut libc::c_void);
+        let unwrapped =
+            unsafe { crate::python::python_coerce::olive_py_unwrap(it.list_ptr as *mut libc::c_void) };
+        if unwrapped.is_null() {
+            return 0;
+        }
+        let mut raw: *mut libc::c_void = std::ptr::null_mut();
+        let has = crate::python::with_gil(|| unsafe {
+            crate::python::python_iter::olive_py_iter_peek_raw(unwrapped, &mut raw)
+        });
+        if !has {
+            return 0;
+        }
+        it.py_peeked = raw as i64;
         it.has_peeked = true;
-        return if it.py_peeked != 0 { 1 } else { 0 };
+        return 1;
     }
     if unsafe { *(it.list_ptr as *const i64) } == crate::KIND_BYTES {
         let bytes = unsafe { &*(it.list_ptr as *const crate::bytes::OliveBytes) };
@@ -1534,9 +1580,23 @@ pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
     if it.is_py {
         if it.has_peeked {
             it.has_peeked = false;
-            let val = it.py_peeked;
+            let raw = it.py_peeked as *mut libc::c_void;
             it.py_peeked = 0;
-            return val;
+            if raw.is_null() {
+                return 0;
+            }
+            return crate::python::with_gil(|| unsafe {
+                let val = crate::python::python_coerce::py_to_olive_internal(raw);
+                crate::python::PY_DEC_REF(raw);
+                if crate::python::python_coerce::conversion_failed() {
+                    let msg = crate::python::python_coerce::take_conversion_error()
+                        .unwrap_or_else(|| {
+                            "Python conversion graph is cyclic or too deeply nested".to_string()
+                        });
+                    crate::panic::abort_py_coerce(&msg);
+                }
+                val
+            });
         }
         return crate::python::python_iter::olive_py_iter_next(it.list_ptr as *mut libc::c_void);
     }

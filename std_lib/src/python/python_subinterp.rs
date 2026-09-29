@@ -302,5 +302,6 @@ pub unsafe fn pool_finalize() {
 
         POOL_SIZE.store(0, Ordering::Release);
         NEXT_SLOT.store(0, Ordering::Release);
+        POOL_EPOCH.fetch_add(1, Ordering::AcqRel);
     }
 }

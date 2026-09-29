@@ -493,28 +493,42 @@ pub extern "C" fn olive_buf_getslice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_free(buf: i64) {
-    if !crate::slab::slot_is_live(buf) {
+    if buf == 0 {
         return;
     }
     let Some(is_global) = crate::slab::slab_membership(buf) else {
         return;
     };
-    let release = |sl: &mut GenSlab| {
+    // The slot detach plus slot free run under the single arena lock on the
+    // global path; the detached storage drops after the lock is released.
+    // Releasing Python backing can acquire the GIL. Never hold the escape
+    // arena lock across that operation.
+    let storage = if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_bytes_inner(buf))
+    } else {
+        free_bytes_inner(buf)
+    };
+    drop(storage);
+}
+
+/// Triple-checked body: ownership then liveness, both before the kind word
+/// is read. Detaches the header and frees the slot, returning the storage
+/// for the caller to drop outside any arena lock.
+fn free_bytes_inner(buf: i64) -> Option<OliveBytes> {
+    if !crate::slab::check_owned_live(buf, owns_bytes) {
+        return None;
+    }
+    if unsafe { *(buf as *const i64) } != KIND_BYTES {
+        return None;
+    }
+    with_bytes_slab(|sl| {
         if !sl.owns_addr(buf as usize) {
             return None;
         }
         let storage = unsafe { std::ptr::replace(buf as *mut OliveBytes, OliveBytes::empty()) };
         sl.free(buf as *mut u8);
         Some(storage)
-    };
-    let storage = if is_global {
-        crate::slab::with_escape_arena(|| with_bytes_slab(release))
-    } else {
-        with_bytes_slab(release)
-    };
-    // Releasing Python backing can acquire the GIL. Never hold the escape
-    // arena lock across that operation.
-    drop(storage);
+    })
 }
 
 fn read_bytes<const N: usize>(buf: i64, offset: i64) -> Option<[u8; N]> {

@@ -144,14 +144,12 @@ enum KeyClass {
     Raw(i64),
 }
 
-/// The descriptor-less fallback key classifier for string words: a tagged
-/// interned-string pointer has its low bit set, but so does a small odd int
-/// (a real `1`, `5`, ...), so magnitude is the only remaining signal. Sound
-/// only for words that are genuinely strings or small scalars -- concrete
-/// scalar-keyed containers must go through a `_typed` op so `classify_key`
-/// can read the key descriptor instead of this heuristic.
+/// The descriptor-less fallback key classifier for string words: a live heap
+/// or literal string, or an interned char. Sound for arbitrary words because
+/// the heap path requires slab membership plus liveness plus ownership.
+/// A forged odd int fails validation and hashes as a scalar.
 pub(crate) fn is_tagged_str_key(v: i64) -> bool {
-    v & 1 == 1 && (v & !1) > 0x10000
+    crate::string::is_live_str_word(v)
 }
 
 /// Whether `obj_store` must take an owned copy of a heuristically-string
@@ -517,6 +515,38 @@ pub extern "C" fn olive_ffi_errmsg(fn_name: i64, errno: i64) -> i64 {
     crate::olive_str_internal(&msg)
 }
 
+/// Validates an Olive `str` about to cross a fixed C boundary as `char*`.
+/// Returns the body address. A null word passes through as null (optional
+/// string). A string with an interior NUL faults instead of truncating at
+/// the C side, which would silently pass a prefix of the real argument.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_ffi_str_arg(tagged: i64) -> i64 {
+    if tagged == 0 {
+        return 0;
+    }
+    let bytes = crate::olive_str_to_bytes(tagged);
+    if bytes.contains(&0) {
+        crate::panic::abort(
+            "FFI str argument contains an embedded NUL byte, which C would truncate",
+            None,
+        );
+    }
+    crate::string_slab::str_body(tagged)
+}
+
+/// Wraps a C `char*` return as an owned Olive `str`. A null return becomes
+/// `0` instead of a tagged null body, which would fault on the first read.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_ffi_str_ret(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    unsafe {
+        let bytes = std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char).to_bytes();
+        crate::string_slab::str_alloc(bytes)
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_c_struct(ptr: *mut u8, size: i64) {
     if !ptr.is_null() {
@@ -809,14 +839,8 @@ pub(crate) fn format_list_elem(val: i64) -> String {
         boxed::TAG_NULL => return "None".to_string(),
         _ => {}
     }
-    if crate::string::is_interned_char(val) {
+    if crate::string::is_live_str_word(val) {
         return format!("\"{}\"", olive_str_from_ptr(val));
-    }
-    if val & 1 == 1 {
-        let untagged = val & !1;
-        if untagged > 0x10000 {
-            return format!("\"{}\"", olive_str_from_ptr(val));
-        }
     }
     if is_active_object(val) {
         let kind = unsafe { *(val as *const i64) };
@@ -1027,7 +1051,7 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
         boxed::TAG_NULL => return olive_str_internal("None"),
         _ => {}
     }
-    if val & 1 == 1 && (val & !1) > 0x10000 {
+    if crate::string::is_live_str_word(val) {
         return olive_str_internal(&olive_str_from_ptr(val));
     }
     if is_active_object(val) {
@@ -1071,11 +1095,8 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_int(val: i64) -> i64 {
-    if val & 1 == 1 {
-        let untagged = val & !1;
-        if untagged > 0x10000 {
-            return olive_str_to_int(val);
-        }
+    if crate::string::is_live_str_word(val) {
+        return olive_str_to_int(val);
     }
     if is_active_object(val) {
         let kind = unsafe { *(val as *const i64) };
@@ -1257,7 +1278,7 @@ macro_rules! any_profiled {
 any_profiled!(olive_any_add_profiled, olive_any_add);
 
 fn any_is_str(v: i64) -> bool {
-    v & 1 == 1 && (v & !1) > 0x10000
+    crate::string::is_live_str_word(v)
 }
 
 fn any_is_float(v: i64) -> bool {
@@ -1707,7 +1728,7 @@ pub extern "C" fn olive_is_null(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_str(val: i64) -> i64 {
-    (string::is_interned_char(val) || (val > 0x10000 && (val & 1) != 0)) as i64
+    crate::string::is_live_str_word(val) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -1720,7 +1741,7 @@ pub extern "C" fn olive_is_bytes(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
-    if string::is_interned_char(val) {
+    if crate::string::is_live_str_word(val) {
         return olive_str_internal("str");
     }
     match val & boxed::TAG_MASK {
@@ -1728,10 +1749,6 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
         boxed::TAG_BOOL => return olive_str_internal("bool"),
         boxed::TAG_NULL => return olive_str_internal("None"),
         _ => {}
-    }
-    // A bare `0` is int; an inline `null` is handled above.
-    if val > 0x10000 && (val & 1) != 0 {
-        return olive_str_internal("str");
     }
     if !is_active_object(val) {
         return olive_str_internal("int");
@@ -1897,3 +1914,6 @@ pub extern "C" fn olive_cache_set_tuple(cache_ptr: i64, key_ptr: i64, val: i64) 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod free_confusion_tests;

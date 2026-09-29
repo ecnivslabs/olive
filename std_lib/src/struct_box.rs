@@ -101,26 +101,50 @@ pub extern "C" fn olive_struct_box(ptr: i64, desc: i64) -> i64 {
     })
 }
 
-/// Frees a box whose kind was already verified by the caller. The box slot is
+/// Frees a box whose kind was already verified by the caller. Triple-checked
+/// like every other free entry: membership, box ownership, then liveness,
+/// all before the descriptor and inner words are read. The box slot is
 /// released before the inner struct is walked so a data cycle terminates at
-/// the generation guard.
+/// the generation guard. The slot detach plus slot free run under the single
+/// arena lock on the global path; the inner struct frees after the lock is
+/// released.
 pub(crate) fn free_struct_box(val: i64) {
-    if !crate::slab::slot_is_live(val) {
+    if val == 0 {
         return;
     }
-    let (desc, inner) = {
-        let b = unsafe { &*(val as *const OliveStructBox) };
-        (b.desc, b.ptr)
+    let Some(is_global) = crate::slab::slab_membership(val) else {
+        return;
     };
-    match crate::slab::slab_membership(val) {
-        Some(true) => crate::slab::with_escape_arena(|| free_struct_box_local(val)),
-        _ => free_struct_box_local(val),
-    }
-    if desc == 0 {
-        crate::struct_obj::olive_free_struct(inner);
+    let inner = if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_struct_box_inner(val))
     } else {
-        crate::free_typed::olive_free_typed(inner, desc);
+        free_struct_box_inner(val)
+    };
+    if let Some((desc, inner)) = inner {
+        if desc == 0 {
+            crate::struct_obj::olive_free_struct(inner);
+        } else {
+            crate::free_typed::olive_free_typed(inner, desc);
+        }
     }
+}
+
+/// Triple-checked body: ownership then liveness, both before the header
+/// words are read. Detaches the descriptor and inner words and frees the
+/// slot, handing them out for the caller to release outside any arena lock.
+fn free_struct_box_inner(val: i64) -> Option<(i64, i64)> {
+    if !crate::slab::check_owned_live(val, owns_struct_box) {
+        return None;
+    }
+    let (kind, desc, inner) = {
+        let b = unsafe { &*(val as *const OliveStructBox) };
+        (b.kind, b.desc, b.ptr)
+    };
+    if kind != KIND_STRUCT_BOX {
+        return None;
+    }
+    free_struct_box_local(val);
+    Some((desc, inner))
 }
 
 fn free_struct_box_local(val: i64) {
@@ -129,10 +153,27 @@ fn free_struct_box_local(val: i64) {
 
 /// Releases just the box shell, leaving the inner struct alone. The
 /// generation check inside `slab::free` absorbs a stale double free.
+/// Triple-checked like the full box free; the caller (`unbox_take`) already
+/// verified, so this is a second gate, not a first.
 fn free_struct_box_shell(val: i64) {
-    match crate::slab::slab_membership(val) {
-        Some(true) => crate::slab::with_escape_arena(|| free_struct_box_local(val)),
-        _ => free_struct_box_local(val),
+    if val == 0 {
+        return;
+    }
+    let Some(is_global) = crate::slab::slab_membership(val) else {
+        return;
+    };
+    if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| {
+            if crate::slab::check_owned_live(val, owns_struct_box)
+                && unsafe { *(val as *const i64) } == KIND_STRUCT_BOX
+            {
+                free_struct_box_local(val);
+            }
+        });
+    } else if crate::slab::check_owned_live(val, owns_struct_box)
+        && unsafe { *(val as *const i64) } == KIND_STRUCT_BOX
+    {
+        free_struct_box_local(val);
     }
 }
 
@@ -201,11 +242,10 @@ fn peel_struct_box(val: i64) -> i64 {
 /// Names the non-struct member a narrowing check just rejected, so the E0715
 /// fault reads like the value it found instead of a bare address. Reads at
 /// most the kind word of a live slab slot; everything else classifies by
-/// tag and magnitude alone.
+/// tag and validated string membership alone.
 fn rejected_member_name(val: i64) -> &'static str {
-    // Same magnitude heuristic the string classifier uses (`boxed::is_str`):
-    // a bare bit-0 test would misread small odd words like -1 as strings.
-    if val & 1 == 1 && (val & !1) > 0x10000 {
+    // Validated classifier: a forged odd int must not read as a string.
+    if crate::string::is_live_str_word(val) {
         return "a string";
     }
     match val & crate::boxed::TAG_MASK {

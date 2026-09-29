@@ -15,9 +15,7 @@ fn teardown_cleans_initialized_backing_storage() {
         let body = slab.alloc().0;
         unsafe { std::ptr::write(body.add(8) as *mut Arc<()>, owner.clone()) };
         if freed {
-            if cfg!(debug_assertions) {
-                unsafe { cleanup(body) };
-            }
+            unsafe { cleanup(body) };
             slab.free(body);
         }
     }

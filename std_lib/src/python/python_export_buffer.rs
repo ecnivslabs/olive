@@ -34,37 +34,128 @@ struct BufferViewObject {
 static mut BUFFER_VIEW_TYPE: PyObject = std::ptr::null_mut();
 static INIT_TYPE: Once = Once::new();
 
+const MAX_NDIM: usize = 64;
+
+fn checked_total_elements(shape: &[isize]) -> Option<isize> {
+    let mut total: isize = 1;
+    for &dim in shape {
+        if dim < 0 {
+            return None;
+        }
+        total = total.checked_mul(dim)?;
+    }
+    Some(total)
+}
+
+fn checked_buffer_len(shape: &[isize], itemsize: isize) -> Option<isize> {
+    if itemsize <= 0 {
+        return None;
+    }
+    checked_total_elements(shape)?.checked_mul(itemsize)
+}
+
+fn checked_strides_bytes(strides_elems: &[isize], itemsize: isize) -> Option<Vec<isize>> {
+    if itemsize <= 0 {
+        return None;
+    }
+    strides_elems
+        .iter()
+        .map(|s| s.checked_mul(itemsize))
+        .collect()
+}
+
+unsafe fn set_buffer_error(msg: &[u8]) {
+    unsafe {
+        if !PY_EXC_TYPE_ERROR.is_null() {
+            PY_ERR_SET_STRING(PY_EXC_TYPE_ERROR, msg.as_ptr() as *const c_char);
+        }
+    }
+}
+
 unsafe extern "C" fn bufferview_dealloc(obj: PyObject) {
     unsafe {
+        if obj.is_null() {
+            return;
+        }
         let self_ = &*(obj as *const BufferViewObject);
         if let Some(deleter) = self_.deleter {
             deleter(self_.deleter_ctx);
         }
-        drop(Vec::from_raw_parts(
-            self_.shape,
-            self_.ndim as usize,
-            self_.ndim as usize,
-        ));
-        drop(Vec::from_raw_parts(
-            self_.strides,
-            self_.ndim as usize,
-            self_.ndim as usize,
-        ));
+        let ndim = self_.ndim;
+        if ndim < 0 || (ndim as usize) > MAX_NDIM {
+            PY_OBJECT_FREE(obj as *mut c_void);
+            return;
+        }
+        let ndim = ndim as usize;
+        if ndim == 0 {
+            PY_OBJECT_FREE(obj as *mut c_void);
+            return;
+        }
+        if self_.shape.is_null() || self_.strides.is_null() {
+            PY_OBJECT_FREE(obj as *mut c_void);
+            return;
+        }
+        drop(Vec::from_raw_parts(self_.shape, ndim, ndim));
+        drop(Vec::from_raw_parts(self_.strides, ndim, ndim));
         PY_OBJECT_FREE(obj as *mut c_void);
     }
 }
 
 unsafe extern "C" fn bufferview_getbuffer(obj: PyObject, view: *mut c_void, flags: c_int) -> c_int {
     unsafe {
+        if obj.is_null() || view.is_null() {
+            set_buffer_error(b"olive.BufferView: null object or view\0");
+            return -1;
+        }
         let self_ = &*(obj as *const BufferViewObject);
+        if self_.ndim < 0 || (self_.ndim as usize) > MAX_NDIM {
+            set_buffer_error(b"olive.BufferView: invalid ndim\0");
+            return -1;
+        }
+        let ndim = self_.ndim as usize;
+        if self_.itemsize <= 0 {
+            set_buffer_error(b"olive.BufferView: invalid itemsize\0");
+            return -1;
+        }
+        if ndim > 0 && (self_.shape.is_null() || self_.strides.is_null()) {
+            set_buffer_error(b"olive.BufferView: null shape or strides\0");
+            return -1;
+        }
+        let mut total: isize = 1;
+        for i in 0..ndim {
+            let dim = *self_.shape.add(i);
+            if dim < 0 {
+                set_buffer_error(b"olive.BufferView: negative shape dimension\0");
+                return -1;
+            }
+            match total.checked_mul(dim) {
+                Some(v) => total = v,
+                None => {
+                    set_buffer_error(b"olive.BufferView: shape product overflows isize\0");
+                    return -1;
+                }
+            }
+        }
+        let len = match total.checked_mul(self_.itemsize) {
+            Some(v) => v,
+            None => {
+                set_buffer_error(b"olive.BufferView: buffer length overflows isize\0");
+                return -1;
+            }
+        };
+        if len < 0 {
+            set_buffer_error(b"olive.BufferView: negative buffer length\0");
+            return -1;
+        }
+        if len > 0 && self_.ptr.is_null() {
+            set_buffer_error(b"olive.BufferView: null data pointer\0");
+            return -1;
+        }
         let view = &mut *(view as *mut PyBuffer);
         view.obj = obj;
         PY_INC_REF(obj);
-        let total: isize = (0..self_.ndim as usize)
-            .map(|i| *self_.shape.add(i))
-            .product();
         view.buf = self_.ptr;
-        view.len = total * self_.itemsize;
+        view.len = len;
         view.readonly = 0;
         view.itemsize = self_.itemsize;
         view.format = if flags & PYBUF_FORMAT != 0 {
@@ -89,7 +180,13 @@ unsafe extern "C" fn bufferview_getbuffer(obj: PyObject, view: *mut c_void, flag
     }
 }
 
-unsafe extern "C" fn bufferview_releasebuffer(_obj: PyObject, _view: *mut c_void) {}
+unsafe extern "C" fn bufferview_releasebuffer(_obj: PyObject, _view: *mut c_void) {
+    // No-op by CPython contract: `PyBuffer_Release` decrefs `view->obj`
+    // itself after calling this hook, so touching `view->obj` here would
+    // double-decref the wrapper into an early free (UAF on the caller's
+    // final DECREF). The one ref `bufferview_getbuffer` took is owned by
+    // the view lifecycle, not by this hook. Per-view resources: none.
+}
 
 unsafe fn ensure_type() -> PyObject {
     unsafe {
@@ -172,7 +269,23 @@ pub struct BufferSpec<'a> {
 pub unsafe fn export_buffer_view(spec: BufferSpec) -> PyObject {
     unsafe {
         let ndim = spec.shape.len();
-        if !HAS_TYPE_FROMSPEC.load(Ordering::SeqCst) || spec.strides_elems.len() != ndim {
+        if ndim > MAX_NDIM || spec.strides_elems.len() != ndim {
+            return std::ptr::null_mut();
+        }
+        if spec.itemsize <= 0 || spec.format == 0 {
+            return std::ptr::null_mut();
+        }
+        let Some(len_bytes) = checked_buffer_len(spec.shape, spec.itemsize) else {
+            return std::ptr::null_mut();
+        };
+        let Some(strides_bytes) = checked_strides_bytes(spec.strides_elems, spec.itemsize)
+        else {
+            return std::ptr::null_mut();
+        };
+        if len_bytes > 0 && spec.ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        if !HAS_TYPE_FROMSPEC.load(Ordering::SeqCst) {
             return std::ptr::null_mut();
         }
         let ty = ensure_type();
@@ -188,14 +301,16 @@ pub unsafe fn export_buffer_view(spec: BufferSpec) -> PyObject {
         self_.itemsize = spec.itemsize;
         self_.format = [spec.format, 0, 0, 0];
         self_.ndim = ndim as i32;
-        self_.shape = spec.shape.to_vec().leak().as_mut_ptr();
-        self_.strides = spec
-            .strides_elems
-            .iter()
-            .map(|s| s * spec.itemsize)
-            .collect::<Vec<_>>()
-            .leak()
-            .as_mut_ptr();
+        self_.shape = if ndim == 0 {
+            std::ptr::null_mut()
+        } else {
+            spec.shape.to_vec().leak().as_mut_ptr()
+        };
+        self_.strides = if ndim == 0 {
+            std::ptr::null_mut()
+        } else {
+            strides_bytes.leak().as_mut_ptr()
+        };
         self_.deleter = spec.deleter;
         self_.deleter_ctx = spec.deleter_ctx;
         obj
@@ -224,9 +339,18 @@ pub extern "C" fn olive_export_buffer_view(
         if shape_list == 0 || strides_list == 0 {
             return std::ptr::null_mut();
         }
+        if itemsize <= 0 || itemsize > isize::MAX as i64 {
+            return std::ptr::null_mut();
+        }
+        if format < 1 || format > 255 {
+            return std::ptr::null_mut();
+        }
         let shape_v = &*(shape_list as *const crate::StableVec);
         let strides_v = &*(strides_list as *const crate::StableVec);
-        if shape_v.len != strides_v.len {
+        if shape_v.len != strides_v.len || shape_v.len > MAX_NDIM {
+            return std::ptr::null_mut();
+        }
+        if shape_v.len > 0 && (shape_v.ptr.is_null() || strides_v.ptr.is_null()) {
             return std::ptr::null_mut();
         }
         let shape = std::slice::from_raw_parts(shape_v.ptr as *const isize, shape_v.len);
@@ -267,6 +391,74 @@ mod tests {
     fn getattr(obj: PyObject, name: &str) -> PyObject {
         let cname = std::ffi::CString::new(name).unwrap();
         unsafe { PY_OBJECT_GET_ATTR_STRING(obj, cname.as_ptr()) }
+    }
+
+    #[test]
+    fn huge_shape_is_rejected_before_any_allocation() {
+        assert!(checked_buffer_len(&[(1isize << 60), 2], 8).is_none());
+        assert!(checked_total_elements(&[(1isize << 60), 2]).is_some());
+        assert!(checked_total_elements(&[(1isize << 60), 2, 8]).is_none());
+        assert!(checked_buffer_len(&[-1], 8).is_none());
+        assert!(checked_buffer_len(&[4], 0).is_none());
+        assert!(checked_buffer_len(&[4], -8).is_none());
+        assert!(checked_strides_bytes(&[1], 0).is_none());
+    }
+
+    #[test]
+    fn huge_shape_export_returns_null() {
+        let mut data: Vec<u8> = vec![0u8; 8];
+        let ptr = data.as_mut_ptr() as *mut c_void;
+        let obj = unsafe {
+            export_buffer_view(BufferSpec {
+                ptr,
+                itemsize: 8,
+                format: b'd',
+                shape: &[(1isize << 60), 2],
+                strides_elems: &[(1isize << 60), 1],
+                deleter: None,
+                deleter_ctx: std::ptr::null_mut(),
+            })
+        };
+        assert!(
+            obj.is_null(),
+            "shape [2**60, 2] with itemsize 8 overflows isize and must be rejected"
+        );
+        let bad_dim = unsafe {
+            export_buffer_view(BufferSpec {
+                ptr,
+                itemsize: 8,
+                format: b'd',
+                shape: &[-3],
+                strides_elems: &[1],
+                deleter: None,
+                deleter_ctx: std::ptr::null_mut(),
+            })
+        };
+        assert!(bad_dim.is_null(), "negative shape dimension must be rejected");
+        let bad_itemsize = unsafe {
+            export_buffer_view(BufferSpec {
+                ptr,
+                itemsize: 0,
+                format: b'd',
+                shape: &[1],
+                strides_elems: &[1],
+                deleter: None,
+                deleter_ctx: std::ptr::null_mut(),
+            })
+        };
+        assert!(bad_itemsize.is_null(), "non-positive itemsize must be rejected");
+        let null_ptr = unsafe {
+            export_buffer_view(BufferSpec {
+                ptr: std::ptr::null_mut(),
+                itemsize: 8,
+                format: b'd',
+                shape: &[4],
+                strides_elems: &[1],
+                deleter: None,
+                deleter_ctx: std::ptr::null_mut(),
+            })
+        };
+        assert!(null_ptr.is_null(), "null data pointer with nonzero length must be rejected");
     }
 
     #[test]

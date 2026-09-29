@@ -90,15 +90,31 @@ pub(crate) fn olive_free_set(ptr: i64) {
     let Some(is_global) = crate::slab::slab_membership(ptr) else {
         return;
     };
-    if crate::slab::slot_is_live(ptr) {
-        unsafe {
-            let s = &mut *(ptr as *mut OliveHashSet);
-            for i in 0..s.len {
-                crate::free_any_word(*s.ptr.add(i));
-            }
-            release_set_storage(ptr as *mut u8)
-        };
+    if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_set_inner(ptr, true));
+    } else {
+        free_set_inner(ptr, is_global);
     }
+}
+
+/// Triple-checked body: ownership then liveness, both before any header
+/// read. The global path holds the single arena lock across the element
+/// walk and the slot free; nested child frees stay lock-free while the
+/// arena is active.
+fn free_set_inner(ptr: i64, is_global: bool) {
+    if !crate::slab::check_owned_live(ptr, owns_set) {
+        return;
+    }
+    if unsafe { *(ptr as *const i64) } != crate::KIND_SET {
+        return;
+    }
+    unsafe {
+        let s = &mut *(ptr as *mut OliveHashSet);
+        for i in 0..s.len {
+            crate::free_any_word(*s.ptr.add(i));
+        }
+        release_set_storage(ptr as *mut u8)
+    };
     free_set_slot_raw_with(ptr, Some(is_global));
 }
 
@@ -134,7 +150,9 @@ pub(crate) fn free_set_slot_raw_with(ptr: i64, known_global: Option<bool>) {
         s.cap = 0;
     }
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
-    if is_global {
+    if crate::slab::in_escape_arena() {
+        free_set_slot_raw_local(ptr);
+    } else if is_global {
         crate::slab::with_escape_arena(|| free_set_slot_raw_local(ptr));
     } else {
         free_set_slot_raw_local(ptr);

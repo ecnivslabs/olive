@@ -139,10 +139,20 @@ pub fn with_gil<R, F: FnOnce() -> R>(f: F) -> R {
 
 /// Acquire the GIL, routing through the subinterpreter pool when active.
 /// Returns `-1` for subinterp mode (token not needed) or the `PyGILState`
-/// token for main-GIL mode.
+/// token for main-GIL mode. When the pool is active every Python object
+/// belongs to one subinterpreter, so a failed `pool_ensure` (slot
+/// exhaustion, torn-down slot) faults loudly instead of silently running
+/// on the main interpreter with another interpreter's objects.
 unsafe fn gil_acquire() -> std::os::raw::c_int {
-    if python_subinterp::pool_is_active() && unsafe { python_subinterp::pool_ensure() } {
-        -1
+    if python_subinterp::pool_is_active() {
+        if unsafe { python_subinterp::pool_ensure() } {
+            -1
+        } else {
+            crate::panic::abort(
+                "Python subinterpreter pool has no free slot for this thread; raise OLIVE_PY_SUBINTERP_SIZE",
+                None,
+            )
+        }
     } else {
         unsafe { PY_GILSTATE_ENSURE() }
     }

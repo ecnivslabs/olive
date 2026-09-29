@@ -876,7 +876,7 @@ pub extern "C" fn olive_format_any(val: i64, spec: i64) -> i64 {
         crate::boxed::TAG_NULL => return olive_str_internal(&fmt_spec_str("None", &s)),
         _ => {}
     }
-    if val & 1 == 1 && (val & !1) > 0x10000 {
+    if crate::string::is_live_str_word(val) {
         return olive_str_internal(&fmt_spec_str(&olive_str_from_ptr(val), &s));
     }
     olive_str_internal(&fmt_spec_str(&format_list_elem(val), &s))

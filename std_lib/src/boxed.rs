@@ -236,7 +236,7 @@ fn unbox_int_impl(v: i64, checked: bool) -> i64 {
 
 /// Tagged Olive string pointer, not a raw scalar.
 fn is_str(v: i64) -> bool {
-    v & 1 == 1 && (v & !1) > 0x10000
+    crate::string::is_live_str_word(v)
 }
 
 /// True when an Any slot holds a Python object handle that must be unwrapped
@@ -271,23 +271,34 @@ pub extern "C" fn olive_any_truthy(v: i64) -> i64 {
 }
 
 /// Frees a heap scalar from `heap_box`; inline immediates own nothing.
+/// Triple-checked like every other free entry: membership, box ownership,
+/// then liveness, all before the kind word is read. The check plus the slot
+/// free run under the single arena lock on the global path.
 pub fn olive_free_boxed(ptr: i64) {
-    if ptr == 0
-        || ptr & TAG_MASK != 0
-        || !crate::slab::ptr_in_slab_span(ptr)
-        || !is_active_object(ptr)
-    {
+    if ptr == 0 || ptr & TAG_MASK != 0 {
         return;
     }
-    let kind = unsafe { *(ptr as *const i64) };
-    if !matches!(kind, KIND_FLOAT | KIND_INT | KIND_U64) || !crate::is_kind(ptr, kind) {
+    let Some(is_global) = crate::slab::slab_membership(ptr) else {
+        return;
+    };
+    if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_boxed_inner(ptr));
+    } else {
+        free_boxed_inner(ptr);
+    }
+}
+
+/// Triple-checked body: ownership then liveness, both before the kind word
+/// is read. A raw struct slot whose field count collides with a scalar kind
+/// is rejected by the owns check before its header is touched.
+fn free_boxed_inner(ptr: i64) {
+    if !crate::slab::check_owned_live(ptr, owns_boxed) {
         return;
     }
-    match crate::slab::slab_membership(ptr) {
-        None => {}
-        Some(true) => crate::slab::with_escape_arena(|| free_boxed_local(ptr)),
-        Some(false) => free_boxed_local(ptr),
+    if !matches!(unsafe { *(ptr as *const i64) }, KIND_FLOAT | KIND_INT | KIND_U64) {
+        return;
     }
+    free_boxed_local(ptr);
 }
 
 fn free_boxed_local(ptr: i64) {

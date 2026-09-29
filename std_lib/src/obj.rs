@@ -547,34 +547,41 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
     // Ownership is checked against the arena the slot actually lives in: a
     // dict received over a channel sits in the global escape arena, and a
     // purely local owns_addr scan would leak it (plus every field it owns).
-    // The check itself stays because a struct slot's header word is a field
-    // count that collides with KIND_OBJ.
-    let is_ours = if is_global {
-        crate::slab::with_escape_arena(|| obj_slab_owns(ptr))
+    // The global path holds the single arena lock across the whole walk and
+    // the slot free; nested child frees stay lock-free while it is held.
+    if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_obj_inner(ptr, true));
     } else {
-        obj_slab_owns(ptr)
-    };
-    if !is_ours || !is_obj_word(ptr) {
+        free_obj_inner(ptr, is_global);
+    }
+}
+
+/// Triple-checked body: ownership then liveness, both before any header
+/// read. The header word of a struct slot is a field count that collides
+/// with KIND_OBJ, so the owns check must precede the kind read.
+fn free_obj_inner(ptr: i64, is_global: bool) {
+    if !crate::slab::check_owned_live(ptr, obj_slab_owns) {
         return;
     }
-    if crate::slab::slot_is_live(ptr) {
-        unsafe {
-            let obj = &mut *(ptr as *mut OliveObj);
-            for &val in obj.fields.values() {
-                crate::free_any_word(val);
-            }
-            // Keys free like values, except raw structs: headerless field
-            // counts collide with every kind tag, so the untyped free cannot
-            // tell them apart and would corrupt the heap. Those leak here as
-            // before; typed drops still reclaim them through descriptors.
-            // Any-erased dicts hold no raw structs (all boxed), so freeing
-            // the rest precisely reclaims boxes, enums, sequences, and owned
-            // strings with no gaps.
-            for k in obj.fields.keys() {
-                free_untyped_dict_key(k.0);
-            }
-            obj.fields.clear();
+    if unsafe { *(ptr as *const i64) } != KIND_OBJ {
+        return;
+    }
+    unsafe {
+        let obj = &mut *(ptr as *mut OliveObj);
+        for &val in obj.fields.values() {
+            crate::free_any_word(val);
         }
+        // Keys free like values, except raw structs: headerless field
+        // counts collide with every kind tag, so the untyped free cannot
+        // tell them apart and would corrupt the heap. Those leak here as
+        // before; typed drops still reclaim them through descriptors.
+        // Any-erased dicts hold no raw structs (all boxed), so freeing
+        // the rest precisely reclaims boxes, enums, sequences, and owned
+        // strings with no gaps.
+        for k in obj.fields.keys() {
+            free_untyped_dict_key(k.0);
+        }
+        obj.fields.clear();
     }
     free_obj_slot_raw_with(ptr, Some(is_global));
 }
@@ -621,7 +628,9 @@ pub(crate) fn free_obj_slot_raw_with(ptr: i64, known_global: Option<bool>) {
         release_obj_storage(ptr as *mut u8);
     }
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
-    if is_global {
+    if crate::slab::in_escape_arena() {
+        free_obj_slot_raw_local(ptr);
+    } else if is_global {
         crate::slab::with_escape_arena(|| free_obj_slot_raw_local(ptr));
     } else {
         free_obj_slot_raw_local(ptr);

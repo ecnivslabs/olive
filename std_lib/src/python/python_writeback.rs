@@ -349,11 +349,13 @@ pub(crate) unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
     unsafe {
         match tag {
             ARG_PYOBJECT => {
-                let p = olive_py_unwrap(val as PyObject);
+                // Atomic resolve plus incref: the returned reference is
+                // already owned, so just transfer it instead of increfing a
+                // borrowed read that another thread could free first.
+                let p = olive_py_unwrap_new_ref(val as PyObject);
                 if p.is_null() {
                     return p;
                 }
-                PY_INC_REF(p);
                 p
             }
             ARG_INT => raw_scalar_to_py(val, TAG_INT_LIST),
@@ -374,6 +376,26 @@ pub(crate) unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
             ARG_BOOL_LIST => to_py_typed_list(val, TAG_BOOL_LIST, false, false),
             ARG_ANY_LIST => to_py_deep(val),
             _ => olive_any_to_py_checked(val),
+        }
+    }
+}
+
+/// Width-aware variant of `decode_scalar_arg` for pymodule-export returns:
+/// `[f32]` encodes with an `ARG_FLOAT_LIST` base tag plus the export
+/// word's f32-list flag, `[u64]` with `ARG_INT_LIST` plus the u64-list flag.
+/// Without the flags an `[f32]`'s low-32-bit words would misread as `f64`
+/// bits and a `[u64]`'s words above `i64::MAX` as negative.
+pub(crate) unsafe fn decode_scalar_arg_wide(
+    val: i64,
+    tag: i64,
+    value_f32: bool,
+    value_u64: bool,
+) -> PyObject {
+    unsafe {
+        match tag {
+            ARG_FLOAT_LIST => to_py_typed_list(val, TAG_FLOAT_LIST, value_f32, value_u64),
+            ARG_INT_LIST => to_py_typed_list(val, TAG_INT_LIST, value_f32, value_u64),
+            _ => decode_scalar_arg(val, tag),
         }
     }
 }
@@ -627,11 +649,10 @@ unsafe fn decode_scalar(item: PyObject, kind: i64) -> Result<i64, String> {
         match kind {
             TAG_INT_LIST => {
                 if is_sub(PY_BOOL_TYPE) || is_sub(PY_LONG_TYPE) {
-                    let had_error = !PY_ERR_OCCURRED().is_null();
-                    let v = py_long_as_i64(item);
-                    if had_error {
-                        return Ok(v);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        PY_ERR_CLEAR();
                     }
+                    let v = py_long_as_i64(item);
                     if !PY_ERR_OCCURRED().is_null() {
                         PY_ERR_CLEAR();
                         return Err("int (out of range)".to_string());
@@ -645,6 +666,9 @@ unsafe fn decode_scalar(item: PyObject, kind: i64) -> Result<i64, String> {
                     return Ok(PY_FLOAT_AS_DOUBLE(item).to_bits() as i64);
                 }
                 if is_sub(PY_LONG_TYPE) {
+                    if !PY_ERR_OCCURRED().is_null() {
+                        PY_ERR_CLEAR();
+                    }
                     let value = py_long_as_i64(item);
                     if !PY_ERR_OCCURRED().is_null() {
                         PY_ERR_CLEAR();

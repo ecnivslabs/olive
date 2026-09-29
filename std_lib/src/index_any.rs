@@ -192,8 +192,7 @@ pub extern "C" fn olive_any_check_method(obj: i64, mask: i64, method: i64) -> i6
     const SET: i64 = 4;
     const STR: i64 = 8;
     let name = olive_str_from_ptr(method);
-    let is_str_word =
-        crate::string::is_interned_char(obj) || (obj & 1 == 1 && (obj & !1) > 0x10000);
+    let is_str_word = crate::string::is_live_str_word(obj);
     let ok = if obj != 0 && is_active_object(obj) {
         match unsafe { *(obj as *const i64) } {
             KIND_LIST | KIND_ANY_LIST
@@ -222,7 +221,7 @@ pub extern "C" fn olive_any_check_method(obj: i64, mask: i64, method: i64) -> i6
 /// `olive_getslice_any` does; anything else faults.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_count(obj: i64, needle: i64, desc: i64) -> i64 {
-    if crate::string::is_interned_char(obj) || (obj & 1 == 1 && (obj & !1) > 0x10000) {
+    if crate::string::is_live_str_word(obj) {
         return string::olive_str_count(obj, needle);
     }
     if obj != 0 && is_active_object(obj) {
@@ -808,7 +807,7 @@ fn py_key_from_typed_index(index: i64, desc: i64) -> python::PyObject {
         && unsafe { *(crate::string_slab::str_body(desc) as *const u8) == crate::format::D_U64 };
     if is_u64 {
         python::olive_py_from_u64(index)
-    } else if index > 0x10000 && index & 1 != 0 {
+    } else if crate::string::is_live_str_word(index) {
         python::olive_py_from_str(index)
     } else {
         python::olive_py_from_int(index)

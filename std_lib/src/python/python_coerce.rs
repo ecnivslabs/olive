@@ -254,6 +254,36 @@ pub unsafe fn olive_py_unwrap(val: PyObject) -> PyObject {
     }
 }
 
+/// Resolves `val` exactly like `olive_py_unwrap` but hands back a new
+/// reference: resolve and incref run inside one GIL span while holding the
+/// slab lock, so a concurrent `olive_py_decref` of the same handle cannot
+/// free the slot (and decref the object) between the read and the incref.
+/// The caller owns the returned reference and must decref it. Raw
+/// pass-through inputs get the same balanced incref so every caller sees
+/// one uniform contract.
+pub(crate) unsafe fn olive_py_unwrap_new_ref(val: PyObject) -> PyObject {
+    unsafe {
+        if val.is_null() {
+            return std::ptr::null_mut();
+        }
+        // Lock order (GIL, then slab mutex) matches alloc/free, so this
+        // cannot deadlock against them.
+        with_gil(|| {
+            let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
+            let raw = if is_arena_ptr_unlocked(val as usize) {
+                (*(val as *const OlivePyObject)).py_ptr
+            } else {
+                val
+            };
+            if raw.is_null() {
+                return std::ptr::null_mut();
+            }
+            PY_INC_REF(raw);
+            raw
+        })
+    }
+}
+
 #[inline]
 pub(crate) unsafe fn raw_ob_type(obj: PyObject) -> PyObject {
     unsafe {
@@ -332,18 +362,27 @@ pub fn olive_any_to_py(val: i64) -> PyObject {
     olive_to_py(val)
 }
 
-/// Olive string to Python `str`, single-pass and length-carrying when
-/// `PyUnicode_FromStringAndSize` is available (R18): the slab header already
-/// knows the length, so this skips the strlen `PyUnicode_FromString` would
-/// otherwise do internally. Falls back to the strlen-based call when the
-/// symbol is missing.
+/// Olive string to Python `str`, length-carrying in both directions.
+/// Fast path uses `PyUnicode_FromStringAndSize` with the slab length.
+/// Fallback uses `PyUnicode_DecodeUTF8` with the same length, so embedded
+/// NULs survive even when the `AndSize` symbols are missing. Returns null
+/// with the Python error indicator set on failure.
 pub(crate) unsafe fn olive_str_to_py(val: i64) -> PyObject {
     unsafe {
+        let bytes = crate::olive_str_to_bytes(val);
+        if bytes.len() > isize::MAX as usize {
+            return std::ptr::null_mut();
+        }
+        let len = bytes.len() as isize;
         if HAS_STR_AND_SIZE.load(Ordering::Relaxed) {
-            let bytes = crate::olive_str_to_bytes(val);
-            PY_UNICODE_FROM_STRING_AND_SIZE(bytes.as_ptr() as *const c_char, bytes.len() as isize)
+            PY_UNICODE_FROM_STRING_AND_SIZE(bytes.as_ptr() as *const c_char, len)
         } else {
-            PY_UNICODE_FROM_STRING(crate::string_slab::str_body(val) as *const c_char)
+            static STRICT: &[u8] = b"strict\0";
+            PY_UNICODE_DECODE_UTF8(
+                bytes.as_ptr() as *const c_char,
+                len,
+                STRICT.as_ptr() as *const c_char,
+            )
         }
     }
 }
@@ -352,9 +391,10 @@ pub(crate) unsafe fn olive_str_to_py(val: i64) -> PyObject {
 /// when available (R18): one call gives pointer and byte length together, so
 /// the slab string allocates at exact size and copies once, with no `strlen`
 /// rescan and no lossy UTF-8 re-validation (CPython already guarantees valid
-/// UTF-8). Embedded NULs copy through intact on this path. Returns `0` on a
-/// decode failure; falls back to the old strlen/lossy-copy path (which still
-/// truncates at an embedded NUL) when the symbol is missing.
+/// UTF-8). Embedded NULs copy through intact on both paths; the fallback
+/// goes through `PyUnicode_AsUTF8String` plus `PyBytes_Size`, which is also
+/// length-carrying. Returns `0` with the Python error indicator set on a
+/// decode failure; callers must not clear it before propagating.
 pub(crate) unsafe fn py_str_to_olive(py_str_obj: PyObject) -> i64 {
     unsafe {
         if py_str_obj.is_null() {
@@ -366,15 +406,29 @@ pub(crate) unsafe fn py_str_to_olive(py_str_obj: PyObject) -> i64 {
             if ptr.is_null() {
                 return 0;
             }
+            if len < 0 {
+                return 0;
+            }
             let bytes = std::slice::from_raw_parts(ptr as *const u8, len as usize);
             crate::string_slab::str_alloc(bytes)
         } else {
-            let s = PY_UNICODE_AS_UTF8(py_str_obj);
-            if s.is_null() {
+            let bytes_obj = PY_UNICODE_AS_UTF8_STRING(py_str_obj);
+            if bytes_obj.is_null() {
                 return 0;
             }
-            let r_str = CStr::from_ptr(s).to_string_lossy();
-            crate::olive_str_internal(&r_str)
+            let size = PY_BYTES_SIZE(bytes_obj);
+            let buf_ptr = PY_BYTES_AS_STRING(bytes_obj);
+            let result = if size < 0 || (size > 0 && buf_ptr.is_null()) {
+                0
+            } else if size == 0 {
+                crate::string_slab::str_alloc(b"")
+            } else {
+                let bytes =
+                    std::slice::from_raw_parts(buf_ptr as *const u8, size as usize).to_vec();
+                crate::string_slab::str_alloc(&bytes)
+            };
+            PY_DEC_REF(bytes_obj);
+            result
         }
     }
 }
@@ -397,7 +451,7 @@ fn py_noconvert_fault() -> ! {
 }
 
 pub fn olive_to_py(val: i64) -> PyObject {
-    if val > 0x10000 && val & 1 != 0 {
+    if crate::string::is_live_str_word(val) {
         unsafe { olive_str_to_py(val) }
     } else {
         let ptr = val as *const c_void;
@@ -1060,16 +1114,19 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject, boxed: bool) -> i64 {
 pub unsafe fn olive_py_to_list_tagged_internal(obj: PyObject, elem_tag: i64, boxed: bool) -> i64 {
     unsafe {
         let ty = raw_ob_type(obj);
-        let is_list = !ty.is_null()
-            && !PY_LIST_TYPE.is_null()
-            && (ty == PY_LIST_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_LIST_TYPE) != 0);
-        let is_tuple = !ty.is_null()
-            && !PY_TUPLE_TYPE.is_null()
-            && (ty == PY_TUPLE_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_TUPLE_TYPE) != 0);
+        // Exact-type fast path: only a genuine `list`/`tuple` shares the
+        // `ob_item` layout `PY_LIST_GET_ITEM`/`PY_TUPLE_GET_ITEM` read
+        // directly. A subclass may override `__getitem__`/`__len__`, so it
+        // materializes through `PySequence_List` like any other iterable,
+        // honoring its overrides instead of bypassing them.
+        let is_list_exact = !ty.is_null() && !PY_LIST_TYPE.is_null() && ty == PY_LIST_TYPE;
+        let is_tuple_exact =
+            !ty.is_null() && !PY_TUPLE_TYPE.is_null() && ty == PY_TUPLE_TYPE;
 
-        // Non-list/tuple iterables (generators, sets, spaCy Docs) go through PySequence_List.
+        // Non-list/tuple iterables (generators, sets, spaCy Docs, list/tuple
+        // subclasses with overrides) go through PySequence_List.
         let mut materialized = std::ptr::null_mut();
-        let source = if is_list || is_tuple {
+        let source = if is_list_exact || is_tuple_exact {
             obj
         } else {
             materialized = PY_SEQUENCE_LIST(obj);
@@ -1078,7 +1135,7 @@ pub unsafe fn olive_py_to_list_tagged_internal(obj: PyObject, elem_tag: i64, box
             }
             materialized
         };
-        let from_real_list = is_list || !materialized.is_null();
+        let from_real_list = is_list_exact || !materialized.is_null();
 
         let raw_len = if source == obj {
             PY_OBJECT_LENGTH(obj)
@@ -1209,11 +1266,20 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
     unsafe {
         let olive_obj = crate::olive_obj_new();
         if boxed || (key_tag == 0 && value_tag == 0) {
+            let mut entries = Vec::new();
             let mut pos: isize = 0;
             let mut key_obj: PyObject = std::ptr::null_mut();
             let mut val_obj: PyObject = std::ptr::null_mut();
-
             while PY_DICT_NEXT(obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
+                if key_obj.is_null() || val_obj.is_null() {
+                    continue;
+                }
+                PY_INC_REF(key_obj);
+                PY_INC_REF(val_obj);
+                entries.push((key_obj, val_obj));
+            }
+            for index in 0..entries.len() {
+                let (key_obj, val_obj) = entries[index];
                 if !key_obj.is_null() {
                     let key_ty = raw_ob_type(key_obj);
                     let is_unicode = !key_ty.is_null()
@@ -1234,6 +1300,8 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
                         }
                     }
                 }
+                PY_DEC_REF(key_obj);
+                PY_DEC_REF(val_obj);
             }
             if conversion_failed() {
                 crate::olive_free_any(olive_obj);
@@ -1368,11 +1436,23 @@ pub unsafe fn olive_py_to_set_tagged_internal(obj: PyObject, elem_tag: i64, boxe
 
 pub unsafe fn olive_py_to_bytes_internal(obj: PyObject) -> i64 {
     unsafe {
-        let size = PY_BYTES_SIZE(obj) as usize;
+        if obj.is_null() {
+            return crate::bytes::new_buf(Vec::new());
+        }
+        let size = PY_BYTES_SIZE(obj);
+        if size < 0 {
+            crate::python::python_error::handle_py_error();
+        }
         let buf_ptr = PY_BYTES_AS_STRING(obj);
-        let data = if size > 0 && !buf_ptr.is_null() {
-            std::slice::from_raw_parts(buf_ptr as *const u8, size).to_vec()
+        if size > 0 && buf_ptr.is_null() {
+            crate::python::python_error::handle_py_error();
+        }
+        let data = if size > 0 {
+            std::slice::from_raw_parts(buf_ptr as *const u8, size as usize).to_vec()
         } else {
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+            }
             Vec::new()
         };
         crate::bytes::new_buf(data)

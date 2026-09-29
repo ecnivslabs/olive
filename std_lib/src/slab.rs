@@ -49,6 +49,20 @@ pub fn slab_membership(val: i64) -> Option<bool> {
     chunk_for_valid_slot(val).map(|c| c.is_global)
 }
 
+/// Unified free-path classifier, second half of the triple check. Callers
+/// first classify chunk membership with `slab_membership` (outside any arena
+/// lock), then call this before reading any object header: ownership first
+/// (no header dereference, at most the global probe lock), liveness second
+/// (generation word only). Every `olive_free_*` entry follows this exact
+/// order so a forged word, a foreign chunk, or a dead slot never reaches a
+/// header read. The global path runs both checks plus the header walk and
+/// the slot free inside a single `with_escape_arena` lock; the local path
+/// needs no lock at all.
+#[inline]
+pub(crate) fn check_owned_live(ptr: i64, owns: impl FnOnce(i64) -> bool) -> bool {
+    owns(ptr) && slot_is_live(ptr)
+}
+
 pub struct GenSlab {
     free_head: *mut u64,
     bump: *mut u8,
@@ -72,7 +86,7 @@ impl Drop for GenSlab {
                         let slot = chunk.add(offset);
                         let generation =
                             (*(slot.add(8) as *const AtomicU64)).load(Ordering::Relaxed);
-                        if generation != 0 && (!cfg!(debug_assertions) || generation & 1 != 0) {
+                        if generation & 1 != 0 {
                             cleanup(slot.add(16));
                         }
                     }
@@ -106,9 +120,8 @@ impl GenSlab {
         }
     }
 
-    /// The callback releases backing storage for initialized slots at teardown.
-    /// In release builds it must also accept freed slots whose first word holds
-    /// the free-list link. Debug frees poison those slots and skip the callback.
+    /// The callback releases backing storage for live slots at teardown.
+    /// It only ever sees live slots. Freed slots are skipped in all builds.
     pub(crate) const fn with_cleanup(body_bytes: usize, cleanup: unsafe fn(*mut u8)) -> Self {
         let mut slab = Self::new(body_bytes);
         slab.cleanup = Some(cleanup);
@@ -255,6 +268,7 @@ pub struct SlabSet {
     pub bytes: GenSlab,
     pub result: GenSlab,
     pub iter: GenSlab,
+    pub strbuf: GenSlab,
     pub str_slabs: [Option<GenSlab>; 32],
     pub struct_slabs: crate::struct_obj::StructSlabs,
     pub struct_box: GenSlab,
@@ -305,6 +319,11 @@ impl SlabSet {
                 .with_global(is_global),
             iter: GenSlab::new(std::mem::size_of::<crate::list::OliveIter>())
                 .with_global(is_global),
+            strbuf: GenSlab::with_cleanup(
+                std::mem::size_of::<crate::strbuf::OliveStrBuf>(),
+                crate::strbuf::release_strbuf_storage,
+            )
+            .with_global(is_global),
             str_slabs: std::array::from_fn(|_| None),
             struct_slabs: crate::struct_obj::StructSlabs::with_global(is_global),
             struct_box: GenSlab::new(std::mem::size_of::<crate::struct_box::OliveStructBox>())
@@ -360,26 +379,87 @@ pub(crate) fn global_iter_owns_addr(addr: usize) -> bool {
     GLOBAL_SLABS.lock().unwrap().iter.owns_addr(addr)
 }
 
-pub(crate) fn global_str_owns_addr(addr: usize, class: usize) -> bool {
+pub(crate) fn global_strbuf_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().strbuf.owns_addr(addr)
+}
+
+/// Single-lock owns plus free for strings: closes the TOCTOU between a
+/// separate probe and free.
+pub(crate) fn global_str_free_if_owned(addr: usize, class: usize) -> bool {
+    let mut guard = GLOBAL_SLABS.lock().unwrap();
+    if let Some(slab) = guard.str_slabs.get_mut(class).and_then(Option::as_mut)
+        && slab.owns_addr(addr)
+    {
+        slab.free(addr as *mut u8);
+        return true;
+    }
+    false
+}
+
+/// Whether `addr` belongs to any global string class slab. Used by the
+/// validated string classifier to tell a heap string body from a forged
+/// word that happens to land inside some other slab's chunk.
+pub(crate) fn global_str_owns_addr(addr: usize) -> bool {
     GLOBAL_SLABS
         .lock()
         .unwrap()
         .str_slabs
-        .get(class)
-        .and_then(Option::as_ref)
-        .is_some_and(|slab| slab.owns_addr(addr))
+        .iter()
+        .flatten()
+        .any(|slab| slab.owns_addr(addr))
 }
 
-pub(crate) fn global_str_free(addr: usize, class: usize) {
-    if let Some(slab) = GLOBAL_SLABS
-        .lock()
-        .unwrap()
-        .str_slabs
-        .get_mut(class)
-        .and_then(Option::as_mut)
-    {
-        slab.free(addr as *mut u8);
+/// Whether the current thread is already running inside `with_escape_arena`
+/// (the global lock is held and `ACTIVE_SLABS` points at it). Free paths
+/// must not re-enter `with_escape_arena` here: `Mutex` is not reentrant.
+#[inline]
+pub(crate) fn in_escape_arena() -> bool {
+    !ACTIVE_SLABS.get().is_null()
+}
+
+/// Generic generation capture for `Any` and multi-member unions: strings go
+/// through the literal-tolerant path, inline immediates and foreign words
+/// report the zero sentinel, every other live slab body reports its header.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_gen_of(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
     }
+    if ptr & 1 == 1 {
+        if crate::string_slab::str_is_heap(ptr) {
+            return slot_generation(crate::string_slab::str_body(ptr)) as i64;
+        }
+        return 0;
+    }
+    if ptr & 7 != 0 || ptr < 0x1000 {
+        return 0;
+    }
+    if ptr_in_slab_span(ptr) {
+        slot_generation(ptr) as i64
+    } else {
+        0
+    }
+}
+
+/// Generic staleness check matching `olive_gen_of`: null, sentinel, immediate,
+/// literal, and foreign words are never stale; live slab bodies compare
+/// generations exactly like the inline Cranelift path.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_gen_stale(ptr: i64, generation: i64) -> i64 {
+    if ptr == 0 || generation == 0 {
+        return 0;
+    }
+    if ptr & 1 == 1 {
+        return crate::string_slab::olive_str_gen_stale(ptr, generation);
+    }
+    if ptr & 7 != 0 || ptr < 0x1000 {
+        return 0;
+    }
+    if !ptr_in_slab_span(ptr) {
+        return 0;
+    }
+    let cur = slot_generation(ptr) as i64;
+    (((cur ^ generation) << 1) != 0 || cur & 1 == 0) as i64
 }
 
 pub(crate) fn global_struct_raw_owns_addr(addr: usize) -> bool {
@@ -391,6 +471,9 @@ pub(crate) fn global_struct_raw_owns_addr(addr: usize) -> bool {
 /// unlocks; the restore closure keeps the redirect itself from leaking on
 /// unwind (release builds abort, but tests and debug builds unwind).
 pub fn with_escape_arena<T>(f: impl FnOnce() -> T) -> T {
+    if in_escape_arena() {
+        return f();
+    }
     let mut guard = GLOBAL_SLABS.lock().unwrap();
     let slabs_ptr = &mut *guard as *mut SlabSet;
     let old = ACTIVE_SLABS.get();

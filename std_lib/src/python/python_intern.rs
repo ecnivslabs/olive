@@ -1,14 +1,13 @@
-//! Caches one interned Python `str` per attribute-name literal, so repeated
+//! Caches one interned Python `str` per attribute name, so repeated
 //! `obj.attr` access reuses the same name object instead of rebuilding it
-//! from the C string on every call. Keyed by the literal's own pointer:
-//! `Constant::Str` operands are deduplicated per unique string into one
-//! static data blob at compile time (`codegen/cranelift/setup/strings.rs`),
-//! so every use of the same source-level attribute name shares one stable
-//! address for the life of the process -- safe to use as a cache key without
-//! ever hashing or comparing the bytes.
+//! from the C string on every call. Keyed by the name's bytes: callers pass
+//! pointers with no lifetime guarantee (a stack buffer works in tests and
+//! would alias a later, different name at the same address), so an address
+//! key can return another name's object.
 
 use crate::python::*;
 use rustc_hash::FxHashMap;
+use std::ffi::CStr;
 use std::os::raw::c_char;
 
 // Values are `PyObject` cast to `usize`. GIL-guarded rather than locked:
@@ -17,8 +16,8 @@ use std::os::raw::c_char;
 // interpreter and must not leak into another), so the process-wide GIL
 // serializes all access. `MRU` short-circuits the map probe for the loop
 // case where one hot site repeats the same name.
-static ATTR_CACHE: GilCell<Option<FxHashMap<usize, usize>>> = GilCell::new(None);
-static ATTR_MRU: GilCell<(usize, usize)> = GilCell::new((0, 0));
+static ATTR_CACHE: GilCell<Option<FxHashMap<Vec<u8>, usize>>> = GilCell::new(None);
+static ATTR_MRU: GilCell<Option<(Vec<u8>, usize)>> = GilCell::new(None);
 
 /// Whether the interned-name fast path may run: the intern/getattr symbols
 /// exist and one process-wide GIL guards the caches. Pool mode always takes
@@ -38,21 +37,22 @@ pub(crate) fn use_interned_names() -> bool {
 /// lives for the process, not for one call. Caller must hold the
 /// process-wide GIL.
 pub(crate) unsafe fn interned_attr(attr: *const c_char) -> PyObject {
-    let key = attr as usize;
     unsafe {
-        let (mru_key, mru_val) = *ATTR_MRU.get();
-        if mru_key == key {
-            return mru_val as PyObject;
+        let bytes = CStr::from_ptr(attr).to_bytes();
+        if let Some((mru_key, mru_val)) = &*ATTR_MRU.get() {
+            if mru_key.as_slice() == bytes {
+                return *mru_val as PyObject;
+            }
         }
         let cache = (*ATTR_CACHE.get()).get_or_insert_with(FxHashMap::default);
-        if let Some(&cached) = cache.get(&key) {
-            *ATTR_MRU.get() = (key, cached);
+        if let Some(&cached) = cache.get(bytes) {
+            *ATTR_MRU.get() = Some((bytes.to_vec(), cached));
             return cached as PyObject;
         }
         let interned = PY_UNICODE_INTERN_FROM_STRING(attr);
         if !interned.is_null() {
-            cache.insert(key, interned as usize);
-            *ATTR_MRU.get() = (key, interned as usize);
+            cache.insert(bytes.to_vec(), interned as usize);
+            *ATTR_MRU.get() = Some((bytes.to_vec(), interned as usize));
         } else if !PY_ERR_OCCURRED().is_null() {
             PY_ERR_CLEAR();
         }

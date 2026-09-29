@@ -16,7 +16,7 @@ fn fault(expected: &str) -> ! {
 }
 
 fn is_tagged_str(v: i64) -> bool {
-    v & 1 == 1 && (v & !1) > 0x10000
+    crate::string::is_live_str_word(v)
 }
 
 fn struct_tag_name(desc: *const u8, pos: usize) -> Option<(u8, Vec<u8>)> {

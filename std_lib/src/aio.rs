@@ -47,7 +47,7 @@ impl Drop for OliveTask {
         if !self.retired.load(Ordering::Acquire) {
             return;
         }
-        let owns_heap_future = sm_live().lock().unwrap().contains(&self.sm_future);
+        let owns_heap_future = sm_live().lock().unwrap().contains_key(&self.sm_future);
         if !owns_heap_future {
             return;
         }
@@ -219,6 +219,7 @@ fn release_child_pin(ex: &OliveExecutor, child: &Arc<OliveTask>) {
 
 #[cfg(test)]
 fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<OliveTask> {
+    test_sm_track(sm_future_ptr);
     let mut map = ex.task_map.lock().unwrap();
     executor_get_or_create_task_locked(&mut map, sm_future_ptr)
 }
@@ -370,10 +371,9 @@ fn wait_for_plain_child(task: &Arc<OliveTask>, shared: &FutureShared) {
 }
 
 fn park_combinator_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, child_ptr: i64) -> bool {
-    if child_ptr == 0 {
+    let Some(kind) = future_kind_guarded(child_ptr) else {
         return false;
-    }
-    let kind = unsafe { *(child_ptr as *const i64) };
+    };
     match kind {
         KIND_FUTURE => {
             let child = unsafe { &*(child_ptr as *const OliveFuture) };
@@ -449,11 +449,9 @@ fn park_after_pending(
     }
 
     let sub_future = unsafe { *((sf.frame + 8) as *const i64) };
-    if sub_future == 0 {
+    let Some(sub_kind) = future_kind_guarded(sub_future) else {
         return DriveOutcome::Rerun;
-    }
-
-    let sub_kind = unsafe { *(sub_future as *const i64) };
+    };
     match sub_kind {
         KIND_FUTURE => {
             let sf_obj = unsafe { &*(sub_future as *const OliveFuture) };
@@ -529,7 +527,10 @@ fn unregister_from_child_list(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, li
 }
 
 fn unregister_one_child(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, child_ptr: i64) {
-    if child_ptr == 0 || unsafe { *(child_ptr as *const i64) } != KIND_SM_FUTURE {
+    let Some(kind) = future_kind_guarded(child_ptr) else {
+        return;
+    };
+    if kind != KIND_SM_FUTURE {
         return;
     }
     let child = ex.task_map.lock().unwrap().get(&child_ptr).cloned();
@@ -587,7 +588,7 @@ fn executor_publish(
         f.cached = delivered;
         if frame != 0 {
             *((frame + 8) as *mut i64) = delivered;
-            if sm_live().lock().unwrap().contains(&frame) {
+            if sm_live().lock().unwrap().contains_key(&frame) {
                 release_sm_frame(f, true);
             }
         }
@@ -646,17 +647,108 @@ const _: () = {
 /// same counted path as the Rust constructors below.
 static SM_ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 static SM_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
-static SM_LIVE: OnceLock<Mutex<std::collections::HashSet<i64>>> = OnceLock::new();
+static SM_LIVE: OnceLock<Mutex<std::collections::HashMap<i64, i64>>> = OnceLock::new();
 
-fn sm_live() -> &'static Mutex<std::collections::HashSet<i64>> {
-    SM_LIVE.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+fn sm_live() -> &'static Mutex<std::collections::HashMap<i64, i64>> {
+    SM_LIVE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+static PLAIN_LIVE: OnceLock<Mutex<std::collections::HashSet<i64>>> = OnceLock::new();
+
+fn plain_live() -> &'static Mutex<std::collections::HashSet<i64>> {
+    PLAIN_LIVE.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+fn plain_track(ptr: i64) {
+    plain_live().lock().unwrap().insert(ptr);
+}
+
+fn plain_untrack(ptr: i64) {
+    plain_live().lock().unwrap().remove(&ptr);
+}
+
+fn future_kind_guarded(ptr: i64) -> Option<i64> {
+    if ptr == 0 || ptr <= 0x1000 || ptr & 7 != 0 {
+        return None;
+    }
+    if crate::slab::ptr_in_slab_span(ptr) {
+        return None;
+    }
+    {
+        let live = plain_live().lock().unwrap();
+        if live.contains(&ptr) {
+            let kind = unsafe { *(ptr as *const i64) };
+            return if kind == KIND_FUTURE { Some(kind) } else { None };
+        }
+    }
+    {
+        let live = sm_live().lock().unwrap();
+        if let Some(&alloc_size) = live.get(&ptr) {
+            if alloc_size != std::mem::size_of::<OliveSmFuture>() as i64 {
+                return None;
+            }
+            let kind = unsafe { *(ptr as *const i64) };
+            return if kind == KIND_SM_FUTURE {
+                Some(kind)
+            } else {
+                None
+            };
+        }
+    }
+    #[cfg(test)]
+    {
+        let reg = test_sm_registry().lock().unwrap();
+        if reg.contains(&ptr) {
+            let kind = unsafe { *(ptr as *const i64) };
+            return if kind == KIND_FUTURE || kind == KIND_SM_FUTURE {
+                Some(kind)
+            } else {
+                None
+            };
+        }
+    }
+    if sm_task_contains(ptr) {
+        let kind = unsafe { *(ptr as *const i64) };
+        return if kind == KIND_SM_FUTURE {
+            Some(kind)
+        } else {
+            None
+        };
+    }
+    None
+}
+
+#[cfg(test)]
+static TEST_SM_REGISTRY: OnceLock<Mutex<std::collections::HashSet<i64>>> = OnceLock::new();
+
+#[cfg(test)]
+fn test_sm_registry() -> &'static Mutex<std::collections::HashSet<i64>> {
+    TEST_SM_REGISTRY.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+#[cfg(test)]
+fn test_sm_track(ptr: i64) {
+    test_sm_registry().lock().unwrap().insert(ptr);
+}
+
+fn sm_task_contains(ptr: i64) -> bool {
+    let Some(ex) = EXECUTOR.get() else {
+        return false;
+    };
+    if ex.task_map.lock().unwrap().contains_key(&ptr) {
+        return true;
+    }
+    if ex.completed_tasks.lock().unwrap().contains_key(&ptr) {
+        return true;
+    }
+    false
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_sm_alloc(size: i64) -> i64 {
     let ptr = crate::olive_alloc(size) as i64;
     SM_ALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
-    sm_live().lock().unwrap().insert(ptr);
+    sm_live().lock().unwrap().insert(ptr, size);
     ptr
 }
 
@@ -665,7 +757,7 @@ pub extern "C" fn olive_sm_free(ptr: i64, size: i64) {
     if ptr == 0 {
         return;
     }
-    let owned = sm_live().lock().unwrap().remove(&ptr);
+    let owned = sm_live().lock().unwrap().remove(&ptr).is_some();
     if !owned {
         return;
     }
@@ -756,7 +848,7 @@ fn cache_sm_result(future: i64, result: i64) -> i64 {
     };
     f.cached = delivered;
     let frame = f.frame;
-    if frame != 0 && sm_live().lock().unwrap().contains(&frame) {
+    if frame != 0 && sm_live().lock().unwrap().contains_key(&frame) {
         unsafe { release_sm_frame(f, true) };
     }
     f.terminal.store(true, Ordering::Release);
@@ -772,7 +864,10 @@ pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
         return 1;
     }
 
-    if unsafe { *(future as *const i64) } == KIND_SM_FUTURE {
+    let Some(kind) = future_kind_guarded(future) else {
+        return 0;
+    };
+    if kind == KIND_SM_FUTURE {
         // Declared before the poll guard so a retired task outlives the copy
         // taken from its cached result below.
         let mut _completed_task_pin = None;
@@ -813,6 +908,9 @@ pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
         return 0;
     }
 
+    if kind != KIND_FUTURE {
+        return 0;
+    }
     let f = unsafe { &*(future as *const OliveFuture) };
     let shared = unsafe { &*(f.shared as *const FutureShared) };
     let result = {
@@ -869,15 +967,16 @@ pub extern "C" fn olive_make_future(val: i64) -> i64 {
         kind: KIND_FUTURE,
         shared: Arc::into_raw(shared) as i64,
     });
-    Box::into_raw(f) as i64
+    let ptr = Box::into_raw(f) as i64;
+    plain_track(ptr);
+    ptr
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_await_future(future: i64) -> i64 {
-    if future == 0 {
+    let Some(kind) = future_kind_guarded(future) else {
         return 0;
-    }
-    let kind = unsafe { *(future as *const i64) };
+    };
     if kind == KIND_SM_FUTURE {
         let completion = Arc::new(Completion {
             result: Mutex::new(None),
@@ -908,6 +1007,9 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
             }
         }
     } else {
+        if kind != KIND_FUTURE {
+            return 0;
+        }
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
         let result = {
@@ -968,15 +1070,16 @@ pub extern "C" fn olive_spawn_task(callback: i64) -> i64 {
         kind: KIND_FUTURE,
         shared: Arc::into_raw(shared) as i64,
     });
-    Box::into_raw(f) as i64
+    let ptr = Box::into_raw(f) as i64;
+    plain_track(ptr);
+    ptr
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_future(future: i64) -> i64 {
-    if future == 0 {
+    let Some(kind) = future_kind_guarded(future) else {
         return 0;
-    }
-    let kind = unsafe { *(future as *const i64) };
+    };
     if kind == KIND_SM_FUTURE {
         let task = EXECUTOR.get().and_then(|ex| {
             if let Some(task) = ex.task_map.lock().unwrap().get(&future).cloned() {
@@ -1008,7 +1111,8 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
         };
         free_cached_value(cached, result_desc);
         olive_sm_free(future, std::mem::size_of::<OliveSmFuture>() as i64);
-    } else {
+    } else if kind == KIND_FUTURE {
+        plain_untrack(future);
         let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
         let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
         drop(shared);
@@ -1056,7 +1160,9 @@ pub extern "C" fn olive_async_file_read(path: i64) -> i64 {
         kind: KIND_FUTURE,
         shared: Arc::into_raw(shared) as i64,
     });
-    Box::into_raw(f) as i64
+    let ptr = Box::into_raw(f) as i64;
+    plain_track(ptr);
+    ptr
 }
 
 #[unsafe(no_mangle)]
@@ -1098,23 +1204,34 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
         kind: KIND_FUTURE,
         shared: Arc::into_raw(shared) as i64,
     });
-    Box::into_raw(f) as i64
+    let ptr = Box::into_raw(f) as i64;
+    plain_track(ptr);
+    ptr
 }
 
 unsafe fn retain_plain_future(future: i64) -> i64 {
-    if unsafe { *(future as *const i64) } == KIND_FUTURE {
+    let Some(kind) = future_kind_guarded(future) else {
+        return future;
+    };
+    if kind == KIND_FUTURE {
         let f = unsafe { &*(future as *const OliveFuture) };
         unsafe { Arc::increment_strong_count(f.shared as *const FutureShared) };
-        return Box::into_raw(Box::new(OliveFuture {
+        let ptr = Box::into_raw(Box::new(OliveFuture {
             kind: KIND_FUTURE,
             shared: f.shared,
         })) as i64;
+        plain_track(ptr);
+        return ptr;
     }
     future
 }
 
 unsafe fn release_plain_future_ref(future: i64) {
-    if future != 0 && unsafe { *(future as *const i64) } == KIND_FUTURE {
+    let Some(kind) = future_kind_guarded(future) else {
+        return;
+    };
+    if kind == KIND_FUTURE {
+        plain_untrack(future);
         let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
         unsafe { Arc::decrement_strong_count(f.shared as *const FutureShared) };
         drop(f);
@@ -1135,10 +1252,9 @@ fn future_list_len(list_ptr: i64) -> usize {
     let list = unsafe { &*(list_ptr as *const StableVec) };
     for index in 0..list.len {
         let child = unsafe { *list.ptr.add(index) };
-        if child <= 0x1000 || child & 7 != 0 {
+        let Some(kind) = future_kind_guarded(child) else {
             return 0;
-        }
-        let kind = unsafe { *(child as *const i64) };
+        };
         if !matches!(kind, KIND_FUTURE | KIND_SM_FUTURE) {
             return 0;
         }
@@ -1369,10 +1485,9 @@ pub extern "C" fn olive_select(futures_list: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_cancel_future(future: i64) -> i64 {
-    if future == 0 {
+    let Some(kind) = future_kind_guarded(future) else {
         return 0;
-    }
-    let kind = unsafe { *(future as *const i64) };
+    };
     if kind == KIND_SM_FUTURE {
         let f = unsafe { &mut *(future as *mut OliveSmFuture) };
         f.cancelled.store(1, Ordering::Release);
@@ -1443,10 +1558,12 @@ pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
         }
         shared2.cvar.notify_all();
     });
-    Box::into_raw(Box::new(OliveFuture {
+    let ptr = Box::into_raw(Box::new(OliveFuture {
         kind: KIND_FUTURE,
         shared: Arc::into_raw(shared) as i64,
-    })) as i64
+    })) as i64;
+    plain_track(ptr);
+    ptr
 }
 
 #[unsafe(no_mangle)]

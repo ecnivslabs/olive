@@ -43,21 +43,37 @@ fn format_code_and_native_order(view: &PyBuffer) -> Option<(u8, bool)> {
     unsafe {
         let mut p = view.format as *const u8;
         let mut native = true;
+        if *p == 0 {
+            return None;
+        }
         match *p {
             b'@' | b'=' => {}
             b'<' => native = cfg!(target_endian = "little"),
             b'>' | b'!' => native = cfg!(target_endian = "big"),
             _ => {}
         }
-        while matches!(*p, b'@' | b'=' | b'<' | b'>' | b'!') {
+        for _ in 0..8 {
+            if !matches!(*p, b'@' | b'=' | b'<' | b'>' | b'!') {
+                break;
+            }
             p = p.add(1);
+            if *p == 0 {
+                return None;
+            }
+        }
+        if matches!(*p, b'@' | b'=' | b'<' | b'>' | b'!') {
+            return None;
+        }
+        if *p == 0 {
+            return None;
         }
         Some((*p, native))
     }
 }
 
 /// One-dimensional, matches the requested element tag, and its declared
-/// length agrees with `len * itemsize`. Anything else isn't eligible.
+/// length agrees with `len * itemsize` via checked arithmetic. Anything
+/// else isn't eligible.
 unsafe fn eligible_len(view: &PyBuffer) -> Option<usize> {
     if view.ndim != 1
         || view.buf.is_null()
@@ -69,14 +85,26 @@ unsafe fn eligible_len(view: &PyBuffer) -> Option<usize> {
     {
         return None;
     }
-    let len = if view.shape.is_null() {
-        (view.len / view.itemsize) as usize
+    let len_isize = if view.shape.is_null() {
+        if view.itemsize == 0 {
+            return None;
+        }
+        let itemsize = view.itemsize as usize;
+        let total = view.len as usize;
+        if total % itemsize != 0 {
+            return None;
+        }
+        (total / itemsize) as isize
     } else {
-        unsafe { *view.shape as usize }
+        unsafe { *view.shape }
     };
-    if (len as isize) * view.itemsize != view.len {
+    if len_isize < 0 {
         return None;
     }
+    let len = usize::try_from(len_isize).ok()?;
+    len_isize
+        .checked_mul(view.itemsize)
+        .filter(|&total| total == view.len)?;
     Some(len)
 }
 

@@ -197,6 +197,13 @@ pub(crate) unsafe fn call_kw_dict_safe(
         if kwargs_dict != 0 {
             let sv = &*(kwargs_dict as *const crate::StableVec);
             py_kwargs = PY_DICT_NEW();
+            if py_kwargs.is_null() {
+                if !py_args.is_null() {
+                    PY_DEC_REF(py_args);
+                }
+                abandon_pairs(&pairs);
+                return conversion_err();
+            }
             let mut i = 0;
             let mut kw_i = 0;
             while i + 1 < sv.len {
@@ -219,13 +226,58 @@ pub(crate) unsafe fn call_kw_dict_safe(
                     abandon_pairs(&pairs);
                     return conversion_err();
                 }
-                // Olive strings are always NUL-terminated at their raw address; no copy needed.
-                PY_DICT_SET_ITEM_STRING(
-                    py_kwargs,
-                    crate::string_slab::str_body(key) as *const c_char,
-                    py_v,
-                );
+                if key == 0 {
+                    PY_DEC_REF(py_v);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    PY_DEC_REF(py_kwargs);
+                    abandon_pairs(&pairs);
+                    return conversion_err();
+                }
+                let key_bytes = crate::olive_str_to_bytes(key);
+                if key_bytes.len() > isize::MAX as usize {
+                    PY_DEC_REF(py_v);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    PY_DEC_REF(py_kwargs);
+                    abandon_pairs(&pairs);
+                    return conversion_err();
+                }
+                let py_key = if HAS_STR_AND_SIZE.load(Ordering::Relaxed) {
+                    PY_UNICODE_FROM_STRING_AND_SIZE(
+                        key_bytes.as_ptr() as *const c_char,
+                        key_bytes.len() as isize,
+                    )
+                } else {
+                    static STRICT: &[u8] = b"strict\0";
+                    PY_UNICODE_DECODE_UTF8(
+                        key_bytes.as_ptr() as *const c_char,
+                        key_bytes.len() as isize,
+                        STRICT.as_ptr() as *const c_char,
+                    )
+                };
+                if py_key.is_null() {
+                    PY_DEC_REF(py_v);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    PY_DEC_REF(py_kwargs);
+                    abandon_pairs(&pairs);
+                    return conversion_err();
+                }
+                let set_rc = PY_OBJECT_SET_ITEM(py_kwargs, py_key, py_v);
+                PY_DEC_REF(py_key);
                 PY_DEC_REF(py_v);
+                if set_rc == -1 {
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    PY_DEC_REF(py_kwargs);
+                    abandon_pairs(&pairs);
+                    return conversion_err();
+                }
                 i += 2;
                 kw_i += 1;
             }

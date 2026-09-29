@@ -92,14 +92,39 @@ pub extern "C" fn olive_py_module_add_object(
     obj: PyObject,
 ) -> i64 {
     check_python_loaded();
-    unsafe {
+    // `module` may be a raw module pointer (from `olive_py_create_module`)
+    // or a handle; unwrap passes raw pointers through, so this accepts both.
+    with_gil(|| unsafe {
+        let raw_module = olive_py_unwrap(module);
         let raw_obj = olive_py_unwrap(obj);
-        let result = PY_MODULE_ADD_OBJECT(module, name, raw_obj);
+        if raw_module.is_null() || raw_obj.is_null() {
+            return 0;
+        }
+        // `PyModule_AddObject` steals a reference on success, so hand it an
+        // extra one: the Olive handle keeps its own, and the module owns the
+        // new reference. Without this the handle's later decref would leave
+        // the module pointing at a freed object.
+        PY_INC_REF(raw_obj);
+        let result = PY_MODULE_ADD_OBJECT(raw_module, name, raw_obj);
         if result < 0 {
+            PY_DEC_REF(raw_obj);
             handle_py_error();
             0
         } else {
             1
         }
+    })
+}
+
+/// Releases a raw module reference from `olive_py_create_module` on a
+/// `PyInit_*` failure path. Only for raw module pointers, never slab
+/// handles (`olive_py_decref` owns those and would double-free this one).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_module_release(module: PyObject) {
+    if module.is_null() {
+        return;
     }
+    with_gil(|| unsafe {
+        PY_DEC_REF(module);
+    });
 }

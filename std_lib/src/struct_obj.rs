@@ -82,8 +82,22 @@ impl StructSlabs {
     }
 
     fn free_slot(&mut self, ptr: i64, words: usize) {
-        if self.class_for(words).free(ptr as *mut u8) && words == FATPTR_WORDS {
-            self.fatptrs.remove(&ptr);
+        let addr = ptr as usize;
+        for sl in &mut self.fixed {
+            if sl.owns_addr(addr) {
+                if sl.free(ptr as *mut u8) && words == FATPTR_WORDS {
+                    self.fatptrs.remove(&ptr);
+                }
+                return;
+            }
+        }
+        for (_, sl) in &mut self.large {
+            if sl.owns_addr(addr) {
+                if sl.free(ptr as *mut u8) && words == FATPTR_WORDS {
+                    self.fatptrs.remove(&ptr);
+                }
+                return;
+            }
         }
     }
 }
@@ -109,6 +123,10 @@ pub(crate) fn owns_struct_raw(v: i64) -> bool {
             if (*active).struct_slabs.owns_addr(v as usize) {
                 return true;
             }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).struct_slabs.owns_addr(v as usize) {
+                return true;
+            }
             if crate::slab::active_slab_is_global() {
                 return STRUCT_SLABS.with(|sl| (*sl.get()).owns_addr(v as usize));
             }
@@ -127,7 +145,8 @@ pub(crate) fn owns_struct_raw(v: i64) -> bool {
 /// pool and dangles once that thread/task tears its pool down.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
-    let words = n_fields as usize + 1;
+    let n = n_fields.max(0) as usize;
+    let words = n + 1;
     let active = crate::slab::ACTIVE_SLABS.get();
     let (body, _) = if !active.is_null() {
         unsafe { (*active).struct_slabs.class_for(words).alloc() }
@@ -141,8 +160,8 @@ pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
         // release codegen emits on `field = value` stores read the prior
         // word. The typed free path also nulls fields it releases; this
         // covers every other path to a slot.
-        std::ptr::write_bytes(body.add(8) as *mut i64, 0, n_fields as usize);
-        *(body as *mut i64) = n_fields;
+        std::ptr::write_bytes(body.add(8) as *mut i64, 0, n);
+        *(body as *mut i64) = n as i64;
     }
     body as i64
 }
@@ -166,7 +185,27 @@ pub extern "C" fn olive_free_struct(ptr: i64) {
     let Some(is_global) = crate::slab::slab_membership(ptr) else {
         return;
     };
+    if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_struct_inner(ptr, true));
+    } else {
+        free_struct_inner(ptr, is_global);
+    }
+}
+
+/// Triple-checked body: ownership then liveness, both before the field-count
+/// header read. Fatptr records live in the same slabs and are excluded here;
+/// they free through `olive_free_fatptr`, which also removes their ownership.
+fn free_struct_inner(ptr: i64, is_global: bool) {
+    if !crate::slab::check_owned_live(ptr, owns_struct_raw) {
+        return;
+    }
+    if owns_fatptr(ptr) {
+        return;
+    }
     let n_fields = unsafe { *(ptr as *const i64) };
+    if n_fields < 0 {
+        return;
+    }
     free_struct_slot_raw_with(ptr, n_fields, Some(is_global));
 }
 
@@ -177,8 +216,13 @@ pub(crate) fn free_struct_slot_raw(ptr: i64, n_fields: i64) {
 /// `known_global` skips the chunk lookup when the caller already classified
 /// `ptr` a moment ago (e.g. `olive_free_struct`'s own span check).
 pub(crate) fn free_struct_slot_raw_with(ptr: i64, n_fields: i64, known_global: Option<bool>) {
+    if ptr == 0 || n_fields < 0 {
+        return;
+    }
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
-    if is_global {
+    if crate::slab::in_escape_arena() {
+        free_struct_slot_raw_local(ptr, n_fields);
+    } else if is_global {
         crate::slab::with_escape_arena(|| free_struct_slot_raw_local(ptr, n_fields));
     } else {
         free_struct_slot_raw_local(ptr, n_fields);
@@ -186,6 +230,9 @@ pub(crate) fn free_struct_slot_raw_with(ptr: i64, n_fields: i64, known_global: O
 }
 
 fn free_struct_slot_raw_local(ptr: i64, n_fields: i64) {
+    if n_fields < 0 {
+        return;
+    }
     let words = n_fields as usize + 1;
     let active = crate::slab::ACTIVE_SLABS.get();
     if !active.is_null() {
@@ -258,6 +305,11 @@ pub(crate) fn fatptr_fields(ptr: i64) -> (i64, i64, i64, i64) {
 }
 
 /// Frees the concrete value through the record's drop shim, then the record.
+/// Triple-checked like every other free entry: membership, fatptr ownership,
+/// then liveness, all before the kind word is read. The ownership entry is
+/// removed once the checks pass so a stale double free degrades to a no-op.
+/// The shim runs outside the arena lock with the slot still live; the slot
+/// free that follows reuses the classification it already made.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_fatptr(ptr: i64) {
     if ptr == 0 {
@@ -266,28 +318,24 @@ pub extern "C" fn olive_free_fatptr(ptr: i64) {
     let Some(is_global) = crate::slab::slab_membership(ptr) else {
         return;
     };
-    if !owns_fatptr(ptr) {
+    if !crate::slab::check_owned_live(ptr, owns_fatptr) {
+        return;
+    }
+    let (kind, data, shim) = unsafe {
+        let words = ptr as *const i64;
+        (*words, *words.add(1), *words.add(3))
+    };
+    if kind != KIND_FATPTR {
         return;
     }
     fatptr_owners().lock().unwrap().remove(&ptr);
-    if !crate::slab::slot_is_live(ptr) {
-        return;
-    }
-    unsafe {
-        let words = ptr as *const i64;
-        if *words != KIND_FATPTR {
-            return;
-        }
-        let data = *words.add(1);
-        let shim = *words.add(3);
-        if shim != 0 && data != 0 {
-            // The record stores the shim's code address as an integer word,
-            // so it must go through a raw pointer; a `usize -> fn`
-            // transmute would be rejected outright under stricter checkers.
-            let shim_fn: extern "C" fn(i64) -> i64 =
-                std::mem::transmute::<usize, extern "C" fn(i64) -> i64>(shim as usize);
-            shim_fn(data);
-        }
+    if shim != 0 && data != 0 {
+        // The record stores the shim's code address as an integer word,
+        // so it must go through a raw pointer; a `usize -> fn`
+        // transmute would be rejected outright under stricter checkers.
+        let shim_fn: extern "C" fn(i64) -> i64 =
+            unsafe { std::mem::transmute::<usize, extern "C" fn(i64) -> i64>(shim as usize) };
+        shim_fn(data);
     }
     free_struct_slot_raw_with(ptr, FATPTR_WORDS as i64 - 1, Some(is_global));
 }

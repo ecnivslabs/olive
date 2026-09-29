@@ -183,18 +183,26 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
     let Some(is_global) = crate::slab::slab_membership(ptr) else {
         return;
     };
-    if !crate::is_kind(ptr, KIND_ENUM) {
-        return;
-    }
     // Same arena-aware ownership scan as `olive_free_obj`: an enum received
     // over a channel lives in the global escape arena and a purely local
-    // owns_addr check would leak it.
-    let is_ours = if is_global {
-        crate::slab::with_escape_arena(|| enum_slab_owns(ptr))
+    // owns_addr check would leak it. The global path holds the single arena
+    // lock across the payload walk and the slot free.
+    if is_global && !crate::slab::in_escape_arena() {
+        crate::slab::with_escape_arena(|| free_enum_inner(ptr, true));
     } else {
-        enum_slab_owns(ptr)
-    };
-    if !is_ours {
+        free_enum_inner(ptr, is_global);
+    }
+}
+
+/// Triple-checked body: ownership then liveness, both before any header
+/// read. A 3-field struct header collides with KIND_ENUM, so the owns check
+/// must precede the kind read; the descriptor word is read only after
+/// liveness is proven.
+fn free_enum_inner(ptr: i64, is_global: bool) {
+    if !crate::slab::check_owned_live(ptr, enum_slab_owns) {
+        return;
+    }
+    if unsafe { *(ptr as *const i64) } != KIND_ENUM {
         return;
     }
     // Descriptor-carrying enums free exactly like a typed enum free: the
@@ -207,9 +215,7 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
         crate::free_typed::olive_free_typed(ptr, desc);
         return;
     }
-    if crate::slab::slot_is_live(ptr) {
-        unsafe { release_enum_storage(ptr as *mut u8) };
-    }
+    unsafe { release_enum_storage(ptr as *mut u8) };
     free_enum_slot_raw_with(ptr, Some(is_global));
 }
 
@@ -217,10 +223,20 @@ fn enum_slab_owns(ptr: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            (*active).enum_slab.owns_addr(ptr as usize)
-        } else {
-            ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
+            if (*active).enum_slab.owns_addr(ptr as usize) {
+                return true;
+            }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).enum_slab.owns_addr(ptr as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize));
+            }
+            return crate::slab::global_enum_owns_addr(ptr as usize);
         }
+        ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
+            || crate::slab::global_enum_owns_addr(ptr as usize)
     }
 }
 
@@ -240,7 +256,9 @@ pub(crate) fn free_enum_slot_raw_with(ptr: i64, known_global: Option<bool>) {
         e.payload_len = 0;
     }
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
-    if is_global {
+    if crate::slab::in_escape_arena() {
+        free_enum_slot_raw_local(ptr);
+    } else if is_global {
         crate::slab::with_escape_arena(|| free_enum_slot_raw_local(ptr));
     } else {
         free_enum_slot_raw_local(ptr);

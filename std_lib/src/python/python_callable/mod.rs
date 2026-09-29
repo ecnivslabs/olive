@@ -18,11 +18,10 @@
 
 mod dispatch;
 
-use crate::python::python_coerce_ffi::raw_py_to_u64;
 use crate::python::python_writeback::{
     ARG_ANY, ARG_ANY_LIST, ARG_BOOL, ARG_BOOL_LIST, ARG_BYTES, ARG_FLOAT, ARG_FLOAT_LIST, ARG_INT,
     ARG_INT_LIST, ARG_NONE, ARG_PYOBJECT, ARG_SCALAR_F32, ARG_SCALAR_U64, ARG_STR, ARG_STR_LIST,
-    decode_scalar_arg,
+    decode_scalar_arg_wide,
 };
 use crate::python::*;
 use std::os::raw::{c_char, c_void};
@@ -51,6 +50,31 @@ fn ret_tag_of(tags: i64) -> i64 {
 }
 fn param_tag_at(tags: i64, i: i64) -> i64 {
     (((tags as u64) >> (i as u32 * 4)) & 0xF) as i64
+}
+
+/// Pymodule-export list width flags, packed into the tag word's spare bits
+/// 16-25 by `type_to_arg_tag`'s caller (`setup/pymodule.rs::collect_exports`).
+/// The base 4-bit param/return tags cannot distinguish `[float]` from `[f32]`
+/// or `[int]` from `[u64]` (one 4-bit slot free, two widths needed), so each
+/// `[f32]`/`[u64]` list sets one flag bit here while keeping its `float`/`int`
+/// base tag. Bit positions must match the codegen side exactly.
+const LIST_F32_PARAM_SHIFT: u32 = 16;
+const LIST_U64_PARAM_SHIFT: u32 = 20;
+const RET_F32_LIST_FLAG: i64 = 1 << 24;
+const RET_U64_LIST_FLAG: i64 = 1 << 25;
+
+fn param_list_width(tags: i64, i: usize) -> (bool, bool) {
+    (
+        ((tags >> (LIST_F32_PARAM_SHIFT + i as u32)) & 1) != 0,
+        ((tags >> (LIST_U64_PARAM_SHIFT + i as u32)) & 1) != 0,
+    )
+}
+
+fn ret_list_width(tags: i64) -> (bool, bool) {
+    (
+        (tags & RET_F32_LIST_FLAG) != 0,
+        (tags & RET_U64_LIST_FLAG) != 0,
+    )
 }
 
 /// Leaked static descriptor bytes for the two list ret/param tags, laid out
@@ -102,44 +126,140 @@ fn methoddef(fastcall: bool) -> &'static PyMethodDef {
 /// alloc-or-incref-then-decref round trip and `PyObject_Str`'s extra
 /// incref-then-decref, both of which are on the hot path for every call a
 /// Python-driven loop (`map`, `sorted`) makes into an exported callback.
-unsafe fn decode_py_arg(obj: PyObject, tag: i64) -> i64 {
+///
+/// Returns `None` when the argument cannot convert, with a Python error set:
+/// an overflowing `int` propagates its `OverflowError`, an unconvertible one
+/// its `TypeError`, and a failed `str` decode gets a `TypeError` so the
+/// trampoline returns null to Python instead of handing the thunk a null
+/// string word. List params decode by element tag (`[f32]` narrows to 32-bit
+/// words, `[u64]` rejects negatives) rather than the old untyped path, which
+/// stored whatever `py_to_olive_internal` guessed.
+///
+/// Scalar element tags for `py_to_typed_scalar_internal`: 1 int, 2 float,
+/// 3 f32, 4 bool, 5 str, 7 u64.
+unsafe fn decode_py_arg(obj: PyObject, tag: i64, list_f32: bool, list_u64: bool) -> Option<i64> {
     unsafe {
         match tag {
             ARG_INT | ARG_BOOL => {
                 if raw_ob_type(obj) == PY_LONG_TYPE {
-                    py_long_as_i64(obj)
+                    let v = py_long_as_i64(obj);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        return None;
+                    }
+                    Some(v)
                 } else {
-                    raw_py_to_int(obj)
+                    let int_obj = PY_NUMBER_LONG(obj);
+                    if int_obj.is_null() {
+                        return None;
+                    }
+                    let v = py_long_as_i64(int_obj);
+                    PY_DEC_REF(int_obj);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        return None;
+                    }
+                    Some(v)
                 }
             }
-            ARG_FLOAT => raw_py_to_float(obj).to_bits() as i64,
-            ARG_SCALAR_F32 => (raw_py_to_float(obj) as f32).to_bits() as i64,
-            ARG_SCALAR_U64 => raw_py_to_u64(obj) as i64,
+            ARG_FLOAT => {
+                let v = PY_FLOAT_AS_DOUBLE(obj);
+                if v == -1.0 && !PY_ERR_OCCURRED().is_null() {
+                    return None;
+                }
+                Some(v.to_bits() as i64)
+            }
+            ARG_SCALAR_F32 => {
+                let v = PY_FLOAT_AS_DOUBLE(obj);
+                if v == -1.0 && !PY_ERR_OCCURRED().is_null() {
+                    return None;
+                }
+                Some((v as f32).to_bits() as i64)
+            }
+            ARG_SCALAR_U64 => match py_u64_from_python(obj) {
+                Some(v) => Some(v as i64),
+                None => None,
+            },
             ARG_STR => {
                 if raw_ob_type(obj) == PY_UNICODE_TYPE {
-                    py_str_to_olive(obj)
+                    let v = py_str_to_olive(obj);
+                    if v == 0 {
+                        if PY_ERR_OCCURRED().is_null() {
+                            raise_type_error(
+                                "olive callback: str argument is not valid UTF-8",
+                            );
+                        }
+                        return None;
+                    }
+                    Some(v)
                 } else {
-                    raw_py_to_str(obj)
+                    let str_obj = PY_OBJECT_STR(obj);
+                    if str_obj.is_null() {
+                        return None;
+                    }
+                    let v = py_str_to_olive(str_obj);
+                    PY_DEC_REF(str_obj);
+                    if v == 0 {
+                        if PY_ERR_OCCURRED().is_null() {
+                            raise_type_error(
+                                "olive callback: str argument is not valid UTF-8",
+                            );
+                        }
+                        return None;
+                    }
+                    Some(v)
                 }
             }
-            ARG_PYOBJECT => olive_py_wrap_borrowed(obj) as i64,
-            ARG_NONE => 0,
-            ARG_BYTES => crate::python::python_coerce_ffi::olive_py_to_bytes(obj),
-            ARG_ANY => crate::python::python_coerce::py_to_any_internal(obj),
-            ARG_FLOAT_LIST | ARG_INT_LIST | ARG_STR_LIST | ARG_BOOL_LIST => {
-                // Python `list` → typed Olive `[T]`. `olive_py_to_list_internal`
-                // with `boxed=false` stores each element as a raw word using
-                // `py_to_olive_internal`, which is correct for the known scalar
-                // element type (float bit pattern, int, etc.).
-                crate::python::python_coerce::olive_py_to_list_internal(obj, false)
-            }
+            ARG_PYOBJECT => Some(olive_py_wrap_borrowed(obj) as i64),
+            ARG_NONE => Some(0),
+            ARG_BYTES => Some(crate::python::python_coerce_ffi::olive_py_to_bytes(obj)),
+            ARG_ANY => Some(crate::python::python_coerce::py_to_any_internal(obj)),
+            ARG_FLOAT_LIST => Some(crate::python::python_coerce::olive_py_to_list_tagged_internal(
+                obj,
+                if list_f32 { 3 } else { 2 },
+                false,
+            )),
+            ARG_INT_LIST => Some(crate::python::python_coerce::olive_py_to_list_tagged_internal(
+                obj,
+                if list_u64 { 7 } else { 1 },
+                false,
+            )),
+            ARG_STR_LIST => Some(crate::python::python_coerce::olive_py_to_list_tagged_internal(
+                obj, 5, false,
+            )),
+            ARG_BOOL_LIST => Some(crate::python::python_coerce::olive_py_to_list_tagged_internal(
+                obj, 4, false,
+            )),
             ARG_ANY_LIST => {
                 // Python `list` → boxed Olive `[Any]`. Each element goes through
                 // `py_to_any_internal` so scalars carry their inline tag bits.
-                crate::python::python_coerce::olive_py_to_list_internal(obj, true)
+                Some(crate::python::python_coerce::olive_py_to_list_internal(obj, true))
             }
-            _ => unreachable!("decode_py_arg: tag {tag} is not a recognised param tag"),
+            _ => {
+                raise_type_error("olive callback: unsupported argument type");
+                return None;
+            }
         }
+    }
+}
+
+/// Releases one trampoline-decoded argument word by its param tag, the same
+/// ownership the post-call cleanup applies on the success path. Used both
+/// there and when a later argument fails to decode, so a failed call leaks
+/// nothing it already converted.
+unsafe fn free_decoded_arg(word: i64, tag: i64) {
+    match tag {
+        ARG_PYOBJECT => olive_py_decref(word as PyObject),
+        ARG_STR => crate::string_slab::str_free(word),
+        ARG_ANY_LIST => {
+            crate::free_typed::olive_free_typed(word, list_desc(crate::format::D_ANY));
+        }
+        ARG_STR_LIST => {
+            crate::free_typed::olive_free_typed(word, list_desc(crate::format::D_STR));
+        }
+        ARG_FLOAT_LIST | ARG_INT_LIST | ARG_BOOL_LIST => {
+            crate::olive_free_list(word);
+        }
+        ARG_BYTES | ARG_ANY => crate::olive_free_any(word),
+        _ => {}
     }
 }
 
@@ -186,7 +306,16 @@ unsafe fn run_trampoline(
         for (i, slot) in args.iter_mut().enumerate().take(arity as usize) {
             let tag = param_tag_at(tags, i as i64);
             param_tags[i] = tag;
-            *slot = decode_py_arg(get_arg(i), tag);
+            let (list_f32, list_u64) = param_list_width(tags, i);
+            match decode_py_arg(get_arg(i), tag, list_f32, list_u64) {
+                Some(v) => *slot = v,
+                None => {
+                    for j in 0..i {
+                        free_decoded_arg(args[j], param_tags[j]);
+                    }
+                    return std::ptr::null_mut();
+                }
+            }
             arg_kinds[i] = match tag {
                 ARG_FLOAT => 1,
                 ARG_SCALAR_F32 => 2,
@@ -195,11 +324,22 @@ unsafe fn run_trampoline(
         }
 
         let ret_tag = ret_tag_of(tags);
+        if !(0..=4).contains(&arity) || arity as usize > 4 {
+            for j in 0..arity as usize {
+                if j < 4 {
+                    free_decoded_arg(args[j], param_tags[j]);
+                }
+            }
+            return raise_type_error("olive callback: invalid arity");
+        }
         let ret_kind = match ret_tag {
             ARG_FLOAT => 1,
             ARG_SCALAR_F32 => 2,
             _ => 0,
         };
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+        }
         let raw_result = dispatch::invoke_thunk(
             descriptor.thunk_ptr,
             descriptor.record_ptr,
@@ -207,30 +347,23 @@ unsafe fn run_trampoline(
             arg_kinds,
             ret_kind,
         );
+        if !PY_ERR_OCCURRED().is_null() {
+            for i in 0..arity as usize {
+                free_decoded_arg(args[i], param_tags[i]);
+            }
+            return std::ptr::null_mut();
+        }
 
-        let py_result = decode_scalar_arg(raw_result, ret_tag);
+        let (ret_f32, ret_u64) = ret_list_width(tags);
+        let py_result = decode_scalar_arg_wide(raw_result, ret_tag, ret_f32, ret_u64);
         // Thunk parameters are borrowed (every compiled fn declares its params
         // non-owning; a returned param escapes through a deep copy), so the
         // decoded allocations are ours to release once the call returns.
         for i in 0..arity as usize {
-            match param_tags[i] {
-                ARG_PYOBJECT => olive_py_decref(args[i] as PyObject),
-                ARG_STR => crate::string_slab::str_free(args[i]),
-                ARG_ANY_LIST => {
-                    crate::free_typed::olive_free_typed(args[i], list_desc(crate::format::D_ANY));
-                }
-                ARG_STR_LIST => {
-                    crate::free_typed::olive_free_typed(args[i], list_desc(crate::format::D_STR));
-                }
-                ARG_FLOAT_LIST | ARG_INT_LIST | ARG_BOOL_LIST => {
-                    crate::olive_free_list(args[i]);
-                }
-                ARG_BYTES | ARG_ANY => crate::olive_free_any(args[i]),
-                _ => {}
-            }
+            free_decoded_arg(args[i], param_tags[i]);
         }
         // The thunk's return value is an owned olive value (ordinary
-        // move-return convention); `decode_scalar_arg` only ever *reads*
+        // move-return convention); `decode_scalar_arg_wide` only ever *reads*
         // it, so the olive-side resource still needs releasing here.
         match ret_tag {
             ARG_PYOBJECT => olive_py_decref(raw_result as PyObject),
@@ -259,7 +392,10 @@ unsafe fn run_trampoline(
             py_result
         };
         if py_result.is_null() {
-            handle_py_error();
+            if PY_ERR_OCCURRED().is_null() {
+                return raise_type_error("olive callback: failed to convert return value");
+            }
+            return std::ptr::null_mut();
         }
         py_result
     }
@@ -267,10 +403,22 @@ unsafe fn run_trampoline(
 
 unsafe extern "C" fn trampoline_varargs(self_capsule: PyObject, args_tuple: PyObject) -> PyObject {
     unsafe {
-        let argc = PY_TUPLE_SIZE(args_tuple).max(0) as usize;
-        run_trampoline(self_capsule, argc, |i| {
-            PY_TUPLE_GET_ITEM(args_tuple, i as isize)
-        })
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let argc = PY_TUPLE_SIZE(args_tuple).max(0) as usize;
+            run_trampoline(self_capsule, argc, |i| {
+                PY_TUPLE_GET_ITEM(args_tuple, i as isize)
+            })
+        }));
+        match result {
+            Ok(py_result) => py_result,
+            Err(_) => {
+                if PY_ERR_OCCURRED().is_null() {
+                    raise_type_error("olive callback panicked")
+                } else {
+                    std::ptr::null_mut()
+                }
+            }
+        }
     }
 }
 
@@ -280,8 +428,20 @@ unsafe extern "C" fn trampoline_fastcall(
     nargs: isize,
 ) -> PyObject {
     unsafe {
-        let argc = nargs.max(0) as usize;
-        run_trampoline(self_capsule, argc, |i| *args.add(i))
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let argc = nargs.max(0) as usize;
+            run_trampoline(self_capsule, argc, |i| *args.add(i))
+        }));
+        match result {
+            Ok(py_result) => py_result,
+            Err(_) => {
+                if PY_ERR_OCCURRED().is_null() {
+                    raise_type_error("olive callback panicked")
+                } else {
+                    std::ptr::null_mut()
+                }
+            }
+        }
     }
 }
 
@@ -315,8 +475,10 @@ unsafe extern "C" fn capsule_deleter(capsule: PyObject) {
 
 /// Wraps an Olive closure-record value as a genuine `PyCFunction`. `tags`
 /// packs, low to high: up to 4 per-param `ARG_*` tags (4 bits each, bits
-/// 0-15), the real arity (bits 56-59), and the return `ARG_*` tag (bits
-/// 60-63, mirroring `python_ret::ret_tag_of`'s bit position). `record_ptr`
+/// 0-15), pymodule-export list widths (bits 16-23 params, 24-25 return, see
+/// `param_list_width`/`ret_list_width`), the real arity (bits 56-59), and
+/// the return `ARG_*` tag (bits 60-63, mirroring `python_ret::ret_tag_of`'s
+/// bit position). `record_ptr`
 /// is the closure record `build_closure_value` built for the source
 /// `Type::Fn` value -- a bare top-level fn's record has zero captures, a
 /// capturing closure's has one field per capture, both read identically

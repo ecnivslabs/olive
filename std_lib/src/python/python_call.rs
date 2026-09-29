@@ -425,6 +425,9 @@ pub(crate) unsafe fn call_kw_dict(
         if kwargs_dict != 0 {
             let sv = &*(kwargs_dict as *const crate::StableVec);
             py_kwargs = PY_DICT_NEW();
+            if py_kwargs.is_null() {
+                handle_py_error();
+            }
             for (kw_i, i) in (0..sv.len).step_by(2).enumerate() {
                 let k_ptr = *sv.ptr.add(i);
                 let tag = tag_at(kw_coll_tags, kw_i);
@@ -433,16 +436,69 @@ pub(crate) unsafe fn call_kw_dict(
 
                 let py_v = convert_arg_tagged(v, tag, kw_arg_tag, &mut pairs);
                 if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    if !py_v.is_null() {
+                        PY_DEC_REF(py_v);
+                    }
+                    PY_DEC_REF(py_kwargs);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    abandon_pairs(&pairs);
                     handle_py_error();
                 }
 
-                // Olive strings are always NUL-terminated at their raw address; no copy needed.
-                PY_DICT_SET_ITEM_STRING(
-                    py_kwargs,
-                    crate::string_slab::str_body(k_ptr) as *const c_char,
-                    py_v,
-                );
+                if k_ptr == 0 {
+                    PY_DEC_REF(py_v);
+                    PY_DEC_REF(py_kwargs);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    abandon_pairs(&pairs);
+                    crate::panic::abort_py_coerce("Python keyword name is null");
+                }
+                let key_bytes = crate::olive_str_to_bytes(k_ptr);
+                if key_bytes.len() > isize::MAX as usize {
+                    PY_DEC_REF(py_v);
+                    PY_DEC_REF(py_kwargs);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    abandon_pairs(&pairs);
+                    crate::panic::abort_py_coerce("Python keyword name is too large");
+                }
+                let py_key = if HAS_STR_AND_SIZE.load(Ordering::Relaxed) {
+                    PY_UNICODE_FROM_STRING_AND_SIZE(
+                        key_bytes.as_ptr() as *const c_char,
+                        key_bytes.len() as isize,
+                    )
+                } else {
+                    static STRICT: &[u8] = b"strict\0";
+                    PY_UNICODE_DECODE_UTF8(
+                        key_bytes.as_ptr() as *const c_char,
+                        key_bytes.len() as isize,
+                        STRICT.as_ptr() as *const c_char,
+                    )
+                };
+                if py_key.is_null() {
+                    PY_DEC_REF(py_v);
+                    PY_DEC_REF(py_kwargs);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    abandon_pairs(&pairs);
+                    handle_py_error();
+                }
+                let set_rc = PY_OBJECT_SET_ITEM(py_kwargs, py_key, py_v);
+                PY_DEC_REF(py_key);
                 PY_DEC_REF(py_v);
+                if set_rc == -1 {
+                    PY_DEC_REF(py_kwargs);
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    abandon_pairs(&pairs);
+                    handle_py_error();
+                }
                 if arg_is_collection(tag, kw_arg_tag) {
                     *sv.ptr.add(i + 1) = 0;
                 }

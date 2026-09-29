@@ -375,7 +375,7 @@ fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
                     continue;
                 }
                 if word & 1 == 1 {
-                    hashes.push(if (word & !1) > 0x10000 {
+                    hashes.push(if crate::string::is_live_str_word(word) {
                         hash_str(word)
                     } else {
                         one(word as u64)

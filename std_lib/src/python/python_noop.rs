@@ -102,6 +102,13 @@ pub unsafe extern "C" fn noop_from_string_and_size(_: *const c_char, _: isize) -
 pub unsafe extern "C" fn noop_as_utf8_and_size(_: PyObject, _: *mut isize) -> *const c_char {
     std::ptr::null()
 }
+pub unsafe extern "C" fn noop_decode_utf8(
+    _: *const c_char,
+    _: isize,
+    _: *const c_char,
+) -> PyObject {
+    std::ptr::null_mut()
+}
 pub unsafe extern "C" fn noop_list_new(_: isize) -> PyObject {
     std::ptr::null_mut()
 }

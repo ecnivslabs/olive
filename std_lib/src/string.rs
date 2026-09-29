@@ -1,6 +1,38 @@
 use crate::string_slab::{str_body, str_is_heap, str_is_literal};
 use crate::*;
 
+/// Whether a word is a readable Olive string: an interned char, a live heap
+/// string (slab membership plus liveness plus string ownership plus header),
+/// or a mapped literal or foreign pointer. The single classifier every
+/// string test must use, so a forged odd int never reads as a string.
+/// Safe for arbitrary words: heap validation never dereferences an unmapped
+/// address, and literal or foreign validation probes mapping first.
+pub(crate) fn is_live_str_word(v: i64) -> bool {
+    if v == 0 {
+        return false;
+    }
+    if is_interned_char(v) {
+        return true;
+    }
+    if v & crate::string_slab::STR_TAG == 0 {
+        return false;
+    }
+    if v & crate::string_slab::STR_HEAP != 0 {
+        return crate::string_slab::is_live_heap_str(v);
+    }
+    let body = crate::string_slab::str_body(v);
+    if body == 0 || body & 7 != 0 || body <= 0x10000 {
+        return false;
+    }
+    if crate::slab::ptr_in_slab_span(body) {
+        return false;
+    }
+    if v & crate::string_slab::STR_LITERAL != 0 {
+        return crate::string_slab::literal_str_len_validated(body).is_some();
+    }
+    crate::string_slab::page_mapped(body as usize)
+}
+
 /// Converts an Olive string pointer (tagged or untagged) to a byte slice.
 /// Heap and length-bearing literal strings are O(1); foreign C strings use a
 /// bounded NUL-terminated fallback.
@@ -16,22 +48,30 @@ pub fn olive_str_to_bytes_with<'a>(ptr: i64, known_heap: Option<bool>) -> &'a [u
     }
     let p = str_body(ptr);
     if is_interned_char(ptr) {
-        let base = CHAR_STRS.0.as_ptr() as i64;
-        let index = (p - base) as usize;
-        if index < 256 {
-            return &CHAR_STRS.0[index][..1];
-        }
+        return unsafe { std::slice::from_raw_parts(p as *const u8, 1) };
     }
     let is_heap = known_heap.unwrap_or_else(|| str_is_heap(ptr));
     if is_heap {
-        let header_val = unsafe { *(p as *const usize).sub(2) };
-        let len = header_val & 0xFFFFFFFFFFFF;
-        unsafe { std::slice::from_raw_parts(p as *const u8, len) }
+        if !str_is_heap(ptr) {
+            crate::panic::abort("corrupt string pointer: heap flag mismatch", None);
+        }
+        match crate::string_slab::live_heap_str_len(p) {
+            Some(len) => unsafe { std::slice::from_raw_parts(p as *const u8, len) },
+            None => crate::panic::abort("corrupt string pointer: invalid heap string", None),
+        }
     } else if str_is_literal(ptr) {
-        let len = unsafe { *(p as *const usize).sub(1) };
-        unsafe { std::slice::from_raw_parts(p as *const u8, len) }
+        match crate::string_slab::literal_str_len_validated(p) {
+            Some(len) => unsafe { std::slice::from_raw_parts(p as *const u8, len) },
+            None => crate::panic::abort("corrupt string pointer: invalid literal string", None),
+        }
     } else {
-        unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char).to_bytes() }
+        if ptr & crate::string_slab::STR_TAG == 0 {
+            crate::panic::abort("corrupt string pointer: not a string", None);
+        }
+        match crate::string_slab::foreign_str_len_bounded(p) {
+            Some(len) => unsafe { std::slice::from_raw_parts(p as *const u8, len) },
+            None => crate::panic::abort("corrupt string pointer: invalid foreign string", None),
+        }
     }
 }
 
@@ -54,7 +94,7 @@ pub extern "C" fn olive_str_cmp(a: i64, b: i64) -> i64 {
     }
 }
 
-/// Validates a word about to be read as a string: a tagged heap or literal
+/// Validates a word about to be read as a string: a live heap or literal
 /// pointer, or an interned char. Method calls through an `Any` receiver
 /// reach these entries with arbitrary words, which would otherwise read out
 /// of bounds (the whole surface segfaulted on an `Any`-held int). Faults
@@ -62,7 +102,7 @@ pub extern "C" fn olive_str_cmp(a: i64, b: i64) -> i64 {
 pub(crate) fn expect_str(word: i64, method: &str) -> i64 {
     // `0` (`None`) keeps its existing per-function behavior below; only
     // nonzero impostors fault, so no non-crashing input changes meaning.
-    if word == 0 || is_interned_char(word) || (word & 1 == 1 && (word & !1) > 0x10000) {
+    if word == 0 || is_live_str_word(word) {
         return word;
     }
     crate::panic::abort(&format!("`{method}` requires a string argument"), None)
@@ -291,18 +331,26 @@ mod get_checked_tests {
 }
 
 pub fn olive_str_as_str<'a>(ptr: i64) -> Option<&'a str> {
-    if ptr == 0 || crate::olive_is_str(ptr) != 1 {
+    if ptr == 0 || !is_live_str_word(ptr) {
         return None;
+    }
+    if is_interned_char(ptr) {
+        let body = str_body(ptr);
+        let bytes = unsafe { std::slice::from_raw_parts(body as *const u8, 1) };
+        return std::str::from_utf8(bytes).ok();
     }
     let body = str_body(ptr);
-    if str_is_heap(ptr) {
-        if !crate::slab::ptr_is_slab_body(body) {
-            return None;
-        }
-    } else if body & 3 != 0 {
-        return None;
-    }
-    std::str::from_utf8(olive_str_to_bytes(ptr)).ok()
+    let bytes: &'a [u8] = if str_is_heap(ptr) {
+        let len = crate::string_slab::live_heap_str_len(body)?;
+        unsafe { std::slice::from_raw_parts(body as *const u8, len) }
+    } else if str_is_literal(ptr) {
+        let len = crate::string_slab::literal_str_len_validated(body)?;
+        unsafe { std::slice::from_raw_parts(body as *const u8, len) }
+    } else {
+        let len = crate::string_slab::foreign_str_len_bounded(body)?;
+        unsafe { std::slice::from_raw_parts(body as *const u8, len) }
+    };
+    std::str::from_utf8(bytes).ok()
 }
 
 #[unsafe(no_mangle)]

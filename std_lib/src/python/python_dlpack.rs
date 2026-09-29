@@ -177,11 +177,31 @@ pub unsafe fn dlpack_export(spec: DlpackSpec) -> PyObject {
             manager_ctx: mgr as *mut c_void,
             deleter: Some(managed_deleter),
         }));
-        PY_CAPSULE_NEW(
+        let capsule = PY_CAPSULE_NEW(
             dlmt as *mut c_void,
             DLTENSOR_NAME.as_ptr() as *const c_char,
             Some(capsule_deleter),
-        )
+        );
+        if capsule.is_null() {
+            // The export failed, so the caller's buffer is still theirs:
+            // reclaim only the descriptor metadata, never their deleter.
+            let dlmt = &mut *dlmt;
+            drop(Vec::from_raw_parts(dlmt.dl_tensor.shape, ndim, ndim));
+            if !dlmt.dl_tensor.strides.is_null() {
+                drop(Vec::from_raw_parts(dlmt.dl_tensor.strides, ndim, ndim));
+            }
+            drop(Box::from_raw(dlmt.manager_ctx as *mut ManagerCtx));
+            drop(Box::from_raw(dlmt as *mut DLManagedTensor));
+            if PY_ERR_OCCURRED().is_null() {
+                PY_ERR_SET_STRING(
+                    PY_EXC_TYPE_ERROR,
+                    b"DLPack export failed: PyCapsule_New returned NULL\0".as_ptr()
+                        as *const c_char,
+                );
+            }
+            return std::ptr::null_mut();
+        }
+        capsule
     }
 }
 
@@ -446,27 +466,38 @@ pub unsafe fn dlpack_import(obj: PyObject) -> Option<ImportedDlpack> {
             return None;
         }
         let empty_args = PY_TUPLE_NEW(0);
+        if empty_args.is_null() {
+            PY_DEC_REF(method);
+            crate::python::python_error::handle_py_error();
+        }
         let capsule = PY_OBJECT_CALL_OBJECT(method, empty_args);
         PY_DEC_REF(empty_args);
         PY_DEC_REF(method);
         if capsule.is_null() {
-            // The exporter raised (or returned null): same hygiene. This
-            // entry point reports incapability rather than propagating the
-            // exception, so swallow it after noting the failure.
-            PY_ERR_CLEAR();
-            return None;
+            crate::python::python_error::handle_py_error();
         }
         if PY_CAPSULE_IS_VALID(capsule, DLTENSOR_NAME.as_ptr() as *const c_char) == 0 {
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_DEC_REF(capsule);
+                crate::python::python_error::handle_py_error();
+            }
             PY_DEC_REF(capsule);
             return None;
         }
         let dlmt = PY_CAPSULE_GET_POINTER(capsule, DLTENSOR_NAME.as_ptr() as *const c_char)
             as *mut DLManagedTensor;
         if dlmt.is_null() {
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_DEC_REF(capsule);
+                crate::python::python_error::handle_py_error();
+            }
             PY_DEC_REF(capsule);
             return None;
         }
-        PY_CAPSULE_SET_NAME(capsule, USED_DLTENSOR_NAME.as_ptr() as *const c_char);
+        if PY_CAPSULE_SET_NAME(capsule, USED_DLTENSOR_NAME.as_ptr() as *const c_char) != 0 {
+            PY_DEC_REF(capsule);
+            crate::python::python_error::handle_py_error();
+        }
         PY_DEC_REF(capsule);
         Some(ImportedDlpack { dlmt })
     }

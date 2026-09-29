@@ -234,6 +234,8 @@ pub extern "C" fn olive_py_initialize() {
         PY_NUMBER_LONG = compat_dlsym(handle, "PyNumber_Long");
         PY_FLOAT_AS_DOUBLE = compat_dlsym(handle, "PyFloat_AsDouble");
         PY_UNICODE_AS_UTF8 = compat_dlsym(handle, "PyUnicode_AsUTF8");
+        PY_UNICODE_AS_UTF8_STRING = compat_dlsym(handle, "PyUnicode_AsUTF8String");
+        PY_UNICODE_DECODE_UTF8 = compat_dlsym(handle, "PyUnicode_DecodeUTF8");
         PY_UNICODE_AS_UTF8_AND_SIZE = compat_dlsym(handle, "PyUnicode_AsUTF8AndSize");
         PY_UNICODE_FROM_STRING_AND_SIZE = compat_dlsym(handle, "PyUnicode_FromStringAndSize");
         PY_LONG_FROM_LONG = compat_dlsym(handle, "PyLong_FromLong");
@@ -406,6 +408,8 @@ pub extern "C" fn olive_py_initialize() {
             PY_NUMBER_LONG = noop_number_long;
             PY_FLOAT_AS_DOUBLE = noop_as_double;
             PY_UNICODE_AS_UTF8 = noop_as_utf8;
+            PY_UNICODE_AS_UTF8_STRING = noop_call_1;
+            PY_UNICODE_DECODE_UTF8 = crate::python::python_noop::noop_decode_utf8;
             PY_UNICODE_AS_UTF8_AND_SIZE = crate::python::python_noop::noop_as_utf8_and_size;
             PY_UNICODE_FROM_STRING_AND_SIZE =
                 crate::python::python_noop::noop_from_string_and_size;
@@ -592,15 +596,6 @@ pub extern "C" fn olive_py_initialize() {
         if !already_initialized {
             PY_INITIALIZE();
 
-            if PY_RUN_SIMPLE_STRING(
-                b"import sys; sys.path.insert(0, '')\0".as_ptr() as *const c_char,
-            ) != 0
-            {
-                // A failed embed-init script leaves the error indicator set;
-                // every later C-API call would see a bogus pending exception.
-                PY_ERR_CLEAR();
-            }
-
             let init_ptr: *const () = PY_EVAL_INIT_THREADS as *const ();
             if !init_ptr.is_null() && init_ptr != (noop_initialize as *const ()) {
                 PY_EVAL_INIT_THREADS();
@@ -665,25 +660,32 @@ pub extern "C" fn olive_py_initialize() {
 pub extern "C" fn olive_py_finalize() {
     unsafe {
         if INITIALIZED.load(Ordering::SeqCst) {
+            // Hold the GIL across the whole teardown: the subinterpreter
+            // pool, the traceback-format decref, and `Py_Finalize` all
+            // require it. Releasing between them would let another thread
+            // run Python on objects being torn down, and decrefing without
+            // it is a data race.
             let restore_ptr: *const () = PY_EVAL_RESTORE_THREAD as *const ();
-            if !restore_ptr.is_null()
+            let restored = !restore_ptr.is_null()
                 && restore_ptr != (noop_restore_thread as *const ())
-                && !MAIN_THREAD_STATE.is_null()
-            {
+                && !MAIN_THREAD_STATE.is_null();
+            let ensured = if restored {
                 PY_EVAL_RESTORE_THREAD(MAIN_THREAD_STATE);
-                // R21: finalize subinterpreter pool while main GIL is held.
-                crate::python::python_subinterp::pool_finalize();
-                MAIN_THREAD_STATE = std::ptr::null_mut();
+                0
             } else {
-                let _gil = PY_GILSTATE_ENSURE();
-                crate::python::python_subinterp::pool_finalize();
-            }
+                PY_GILSTATE_ENSURE()
+            };
+            // R21: finalize subinterpreter pool while main GIL is held.
+            crate::python::python_subinterp::pool_finalize();
+            MAIN_THREAD_STATE = std::ptr::null_mut();
             if !PY_TRACEBACK_FORMAT_EXCEPTION.is_null() {
                 PY_DEC_REF(PY_TRACEBACK_FORMAT_EXCEPTION);
                 PY_TRACEBACK_FORMAT_EXCEPTION = std::ptr::null_mut();
             }
             if OWNS_FINALIZATION.load(Ordering::SeqCst) {
                 PY_FINALIZE();
+            } else if !restored {
+                PY_GILSTATE_RELEASE(ensured);
             }
             OWNS_FINALIZATION.store(false, Ordering::SeqCst);
             INITIALIZED.store(false, Ordering::SeqCst);

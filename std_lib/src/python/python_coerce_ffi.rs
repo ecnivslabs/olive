@@ -55,13 +55,23 @@ pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_eq(l: PyObject, r: PyObject) -> i64 {
     check_python_loaded();
-    let un_l = unsafe { olive_py_unwrap(l) };
-    let un_r = unsafe { olive_py_unwrap(r) };
+    let un_l = unsafe { olive_py_unwrap_new_ref(l) };
+    let un_r = unsafe { olive_py_unwrap_new_ref(r) };
     if un_l.is_null() || un_r.is_null() {
+        with_gil(|| unsafe {
+            if !un_l.is_null() {
+                PY_DEC_REF(un_l);
+            }
+            if !un_r.is_null() {
+                PY_DEC_REF(un_r);
+            }
+        });
         return 0;
     }
     with_gil(|| unsafe {
         let res = PY_OBJECT_RICHCOMPAREBOOL(un_l, un_r, 2);
+        PY_DEC_REF(un_l);
+        PY_DEC_REF(un_r);
         if res == -1 {
             PY_ERR_CLEAR();
             0
@@ -73,13 +83,23 @@ pub extern "C" fn olive_py_eq(l: PyObject, r: PyObject) -> i64 {
 
 fn py_richcmp(l: PyObject, r: PyObject, op: std::ffi::c_int) -> i64 {
     check_python_loaded();
-    let un_l = unsafe { olive_py_unwrap(l) };
-    let un_r = unsafe { olive_py_unwrap(r) };
+    let un_l = unsafe { olive_py_unwrap_new_ref(l) };
+    let un_r = unsafe { olive_py_unwrap_new_ref(r) };
     if un_l.is_null() || un_r.is_null() {
+        with_gil(|| unsafe {
+            if !un_l.is_null() {
+                PY_DEC_REF(un_l);
+            }
+            if !un_r.is_null() {
+                PY_DEC_REF(un_r);
+            }
+        });
         return 0;
     }
     with_gil(|| unsafe {
         let res = PY_OBJECT_RICHCOMPAREBOOL(un_l, un_r, op);
+        PY_DEC_REF(un_l);
+        PY_DEC_REF(un_r);
         if res == -1 {
             PY_ERR_CLEAR();
             0
@@ -119,11 +139,20 @@ pub extern "C" fn olive_py_copy_ref(arena_ptr: PyObject) -> PyObject {
     if arena_ptr.is_null() {
         return std::ptr::null_mut();
     }
-    let raw_py = unsafe { olive_py_unwrap(arena_ptr) };
+    // Resolve plus incref is atomic inside the helper; the new reference
+    // keeps the object alive across the handle alloc below even if another
+    // thread frees the source handle in between, and the fresh handle takes
+    // over ownership of exactly that reference.
+    let raw_py = unsafe { olive_py_unwrap_new_ref(arena_ptr) };
     if raw_py.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe { olive_py_wrap_borrowed(raw_py) }
+    let handle = unsafe { olive_py_wrap_owned(raw_py) };
+    if handle.is_null() {
+        with_gil(|| unsafe { PY_DEC_REF(raw_py) });
+        return std::ptr::null_mut();
+    }
+    handle
 }
 
 /// Converts an already-unwrapped, live Python object into an `i64`, the
@@ -137,12 +166,18 @@ pub(crate) unsafe fn raw_py_to_int(raw: PyObject) -> i64 {
         // directly instead of allocating a second long via PY_NUMBER_LONG
         // (one alloc + one free per call) just to read the same value back.
         if python_coerce::raw_ob_type(raw) == PY_LONG_TYPE {
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+            }
             let result = py_long_as_i64(raw);
             if !PY_ERR_OCCURRED().is_null() {
                 PY_ERR_CLEAR();
                 crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
             }
             return result;
+        }
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
         }
         let int_obj = PY_NUMBER_LONG(raw);
         if int_obj.is_null() {
@@ -192,6 +227,15 @@ pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
 /// See `raw_py_to_int`; the float counterpart `olive_py_to_float` wraps.
 pub(crate) unsafe fn raw_py_to_float(raw: PyObject) -> f64 {
     unsafe {
+        // Exact-type fast path: a genuine float reads `ob_fval` directly and
+        // cannot fail, so a stale error left by an earlier call must not turn
+        // a legitimate `-1.0` into a spurious abort.
+        if python_coerce::raw_ob_type(raw) == PY_FLOAT_TYPE {
+            return PY_FLOAT_AS_DOUBLE(raw);
+        }
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+        }
         let result = PY_FLOAT_AS_DOUBLE(raw);
         if result == -1.0 && !PY_ERR_OCCURRED().is_null() {
             PY_ERR_CLEAR();

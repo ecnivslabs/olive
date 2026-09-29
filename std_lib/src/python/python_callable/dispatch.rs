@@ -3,6 +3,23 @@
 //! Every Olive scalar crosses the trampoline/thunk boundary as one i64 word.
 //! The thunk still uses its native ABI, so integer, f64, and f32 slots need
 //! distinct monomorphic function signatures.
+//!
+//! Invalid shapes never unwind across the Python C boundary: they set a
+//! Python `TypeError` and return `0` so the trampoline returns null to
+//! Python instead of panicking through C frames.
+
+fn invalid_shape() -> i64 {
+    unsafe {
+        if !crate::python::PY_EXC_TYPE_ERROR.is_null() {
+            let msg = b"olive callback: invalid scalar shape\0";
+            crate::python::PY_ERR_SET_STRING(
+                crate::python::PY_EXC_TYPE_ERROR,
+                msg.as_ptr() as *const std::os::raw::c_char,
+            );
+        }
+        0
+    }
+}
 
 macro_rules! slot_ty {
     (I) => {
@@ -58,7 +75,7 @@ pub(super) fn invoke_thunk(
             0 => shape_call!(thunk, env, I),
             1 => shape_call!(thunk, env, F),
             2 => shape_call!(thunk, env, F32),
-            _ => unreachable!("invalid callable return kind"),
+            _ => return invalid_shape(),
         },
         1 => {
             let a0 = arg_kinds[0];
@@ -72,7 +89,7 @@ pub(super) fn invoke_thunk(
                 (2, 0) => shape_call!(thunk, env, I; F32: args[0]),
                 (2, 1) => shape_call!(thunk, env, F; F32: args[0]),
                 (2, 2) => shape_call!(thunk, env, F32; F32: args[0]),
-                _ => unreachable!("invalid callable scalar shape"),
+                _ => return invalid_shape(),
             }
         }
         2 => {
@@ -106,7 +123,7 @@ pub(super) fn invoke_thunk(
                 (2, 2, 0) => shape_call!(thunk, env, I; F32: args[0], F32: args[1]),
                 (2, 2, 1) => shape_call!(thunk, env, F; F32: args[0], F32: args[1]),
                 (2, 2, 2) => shape_call!(thunk, env, F32; F32: args[0], F32: args[1]),
-                _ => unreachable!("invalid callable scalar shape"),
+                _ => return invalid_shape(),
             }
         }
         3 => {
@@ -213,7 +230,7 @@ pub(super) fn invoke_thunk(
                 (2, 2, 2, 2) => {
                     shape_call!(thunk, env, F32; F32: args[0], F32: args[1], F32: args[2])
                 }
-                _ => unreachable!("invalid callable scalar shape"),
+                _ => return invalid_shape(),
             }
         }
         4 => {
@@ -951,10 +968,10 @@ pub(super) fn invoke_thunk(
                 (2, 2, 2, 2, 2) => {
                     shape_call!(thunk, env, F32; F32: args[0], F32: args[1], F32: args[2], F32: args[3])
                 }
-                _ => unreachable!("invalid callable scalar shape"),
+                _ => return invalid_shape(),
             }
         }
-        n => unreachable!("invoke_thunk: arity {n} out of range (max 4)"),
+        _ => return invalid_shape(),
     }
 }
 

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
 
 fn wait_for_sm_free(future: i64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while super::sm_live().lock().unwrap().contains(&future) {
+    while super::sm_live().lock().unwrap().contains_key(&future) {
         assert!(std::time::Instant::now() < deadline, "future was not freed");
         std::thread::yield_now();
     }
@@ -836,11 +836,11 @@ fn completed_sm_future_remains_pinned_until_poll_guard_exits() {
 
     olive_free_future(future);
     assert!(!ex.completed_tasks.lock().unwrap().contains_key(&future));
-    assert!(super::sm_live().lock().unwrap().contains(&future));
+    assert!(super::sm_live().lock().unwrap().contains_key(&future));
 
     drop(poll_guard);
     drop(task);
-    assert!(!super::sm_live().lock().unwrap().contains(&future));
+    assert!(!super::sm_live().lock().unwrap().contains_key(&future));
 }
 
 #[test]
@@ -883,7 +883,7 @@ fn freeing_running_sm_future_defers_handle_release() {
     }
 
     olive_free_future(future);
-    assert!(super::sm_live().lock().unwrap().contains(&future));
+    assert!(super::sm_live().lock().unwrap().contains_key(&future));
     EXCLUSIVE_POLL_RELEASE.store(true, Ordering::Release);
     assert_eq!(waiter.join().unwrap(), 42);
     wait_for_sm_free(future);

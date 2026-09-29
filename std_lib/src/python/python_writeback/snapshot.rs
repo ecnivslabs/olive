@@ -431,18 +431,31 @@ unsafe fn python_dict_has_exact_key(dict: PyObject, key: i64) -> bool {
             return false;
         }
         let wanted_type = raw_ob_type(wanted);
+        let mut entries = Vec::new();
         let mut pos: isize = 0;
         let mut candidate = std::ptr::null_mut();
         let mut value = std::ptr::null_mut();
-        let mut found = false;
         while PY_DICT_NEXT(dict, &mut pos, &mut candidate, &mut value) != 0 {
+            if candidate.is_null() || value.is_null() {
+                continue;
+            }
+            PY_INC_REF(candidate);
+            PY_INC_REF(value);
+            entries.push((candidate, value));
+        }
+        let mut found = false;
+        for (candidate, _) in &entries {
             if !candidate.is_null()
-                && raw_ob_type(candidate) == wanted_type
-                && PY_OBJECT_RICHCOMPAREBOOL(candidate, wanted, 2) == 1
+                && raw_ob_type(*candidate) == wanted_type
+                && PY_OBJECT_RICHCOMPAREBOOL(*candidate, wanted, 2) == 1
             {
                 found = true;
                 break;
             }
+        }
+        for (candidate, value) in entries {
+            PY_DEC_REF(candidate);
+            PY_DEC_REF(value);
         }
         if !PY_ERR_OCCURRED().is_null() {
             PY_ERR_CLEAR();
