@@ -667,6 +667,7 @@ mod tests {
     use crate::span::Span;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn match_ldconfig_line_matches_soname_with_arch_tag() {
         let line = "\tlibzstd.so.1 (libc6,x86-64) => /usr/lib/libzstd.so.1";
         let dir = match_ldconfig_line(line, "libzstd.so.1", "x86-64");
@@ -674,6 +675,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn match_ldconfig_line_matches_extended_abi_tag() {
         let line =
             "\tlibc.so.6 (libc6,x86-64, OS ABI: Linux 3.2.0) => /lib/x86_64-linux-gnu/libc.so.6";
@@ -682,18 +684,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn match_ldconfig_line_rejects_mismatched_arch() {
         let line = "\tlibfoo.so.1 (libc6) => /usr/lib32/libfoo.so.1";
         assert_eq!(match_ldconfig_line(line, "libfoo.so.1", "x86-64"), None);
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn match_ldconfig_line_rejects_different_soname() {
         let line = "\tlibzstd.so.1 (libc6,x86-64) => /usr/lib/libzstd.so.1";
         assert_eq!(match_ldconfig_line(line, "libzstd.so", "x86-64"), None);
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn match_ldconfig_line_ignores_arch_when_not_requested() {
         let line = "\tlibfoo.so.1 (libc6) => /usr/lib32/libfoo.so.1";
         let dir = match_ldconfig_line(line, "libfoo.so.1", "");
@@ -701,6 +706,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn match_ldconfig_line_handles_missing_tag() {
         let line = "\tlibfoo.so.1 => /usr/lib/libfoo.so.1";
         let dir = match_ldconfig_line(line, "libfoo.so.1", "x86-64");
