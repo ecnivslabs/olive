@@ -15,7 +15,12 @@ fn teardown_cleans_initialized_backing_storage() {
         let body = slab.alloc().0;
         unsafe { std::ptr::write(body.add(8) as *mut Arc<()>, owner.clone()) };
         if freed {
-            unsafe { cleanup(body) };
+            // Same contract the runtime's free paths follow: debug builds
+            // release the storage when the slot is freed, other builds defer
+            // it to `GenSlab::drop`.
+            if cfg!(debug_assertions) {
+                unsafe { cleanup(body) };
+            }
             slab.free(body);
         }
     }

@@ -65,12 +65,16 @@ pub fn olive_str_to_bytes_with<'a>(ptr: i64, known_heap: Option<bool>) -> &'a [u
             None => crate::panic::abort("corrupt string pointer: invalid literal string", None),
         }
     } else {
-        if ptr & crate::string_slab::STR_TAG == 0 {
-            crate::panic::abort("corrupt string pointer: not a string", None);
-        }
+        // An untagged word is the compiler's spelling for a C string: codegen
+        // hands attribute-name literals and leaked `CString`s to
+        // `olive_any_getattr` and friends untagged (see `attr_symbol`), which
+        // is why this entry is documented to take "tagged or untagged". The
+        // bounded probe tells a genuine C string from a forged word, since it
+        // rejects small, misaligned, and slab-resident words without ever
+        // touching an unmapped page.
         match crate::string_slab::foreign_str_len_bounded(p) {
             Some(len) => unsafe { std::slice::from_raw_parts(p as *const u8, len) },
-            None => crate::panic::abort("corrupt string pointer: invalid foreign string", None),
+            None => crate::panic::abort("corrupt string pointer: not a string", None),
         }
     }
 }

@@ -190,8 +190,6 @@ fn spawn_reader(
     buf: Arc<PipeBuf>,
     done: Arc<AtomicU32>,
 ) -> std::thread::JoinHandle<()> {
-    use std::os::windows::io::AsRawHandle;
-
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn PeekNamedPipe(

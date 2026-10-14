@@ -86,7 +86,14 @@ impl Drop for GenSlab {
                         let slot = chunk.add(offset);
                         let generation =
                             (*(slot.add(8) as *const AtomicU64)).load(Ordering::Relaxed);
-                        if generation & 1 != 0 {
+                        // A slot that was ever allocated owns backing storage,
+                        // and the free path only releases it in debug builds
+                        // (where it poisons the body, so the callback must not
+                        // run there at all). In every other build a freed,
+                        // never-recycled slot reaches this loop still holding
+                        // its storage pointer, so the callback has to run for
+                        // it too or the buffer leaks for the process lifetime.
+                        if generation != 0 && (!cfg!(debug_assertions) || generation & 1 != 0) {
                             cleanup(slot.add(16));
                         }
                     }
@@ -120,8 +127,10 @@ impl GenSlab {
         }
     }
 
-    /// The callback releases backing storage for live slots at teardown.
-    /// It only ever sees live slots. Freed slots are skipped in all builds.
+    /// The callback releases backing storage at teardown. It sees every slot
+    /// the free path left holding one: live slots always, and freed slots in
+    /// the builds that defer the release to teardown (debug builds release on
+    /// free and poison the body, so the callback must not run there).
     pub(crate) const fn with_cleanup(body_bytes: usize, cleanup: unsafe fn(*mut u8)) -> Self {
         let mut slab = Self::new(body_bytes);
         slab.cleanup = Some(cleanup);
@@ -410,11 +419,14 @@ pub(crate) fn global_str_owns_addr(addr: usize) -> bool {
 }
 
 /// Whether the current thread is already running inside `with_escape_arena`
-/// (the global lock is held and `ACTIVE_SLABS` points at it). Free paths
-/// must not re-enter `with_escape_arena` here: `Mutex` is not reentrant.
+/// (the global lock is held and `ACTIVE_SLABS` points at the process-lifetime
+/// arena). Free paths must not re-enter `with_escape_arena` here: `Mutex` is
+/// not reentrant. A task's own slab set also sets `ACTIVE_SLABS`, but that is
+/// a different situation: no global lock is held, so a relocation or a free of
+/// a global body must still enter the arena and lock it.
 #[inline]
 pub(crate) fn in_escape_arena() -> bool {
-    !ACTIVE_SLABS.get().is_null()
+    ACTIVE_GLOBAL.get()
 }
 
 /// Generic generation capture for `Any` and multi-member unions: strings go

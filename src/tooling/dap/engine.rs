@@ -171,16 +171,19 @@ const RUNTIME_SYM_NAMES: [&str; 25] = [
     "olive_debug_str_new",
     "olive_free_str",
     // Whole-aggregate `setVariable`/`setExpression` construction
-    // (`setvar.rs::build_aggregate`): the same allocators codegen itself
-    // uses for a list/dict/struct/enum literal, reached by name instead of
-    // by direct linkage.
-    "olive_list_new",
-    "olive_obj_new",
-    "olive_obj_set_owned_typed",
-    "olive_struct_alloc",
-    "olive_enum_new",
-    "olive_set_new",
-    "olive_set_add_typed",
+    // (`setvar.rs::build_value`): allocators that place the built value in the
+    // process-lifetime arena, since the writing controller thread and the
+    // reading debuggee thread are different arena contexts (see
+    // `std_lib/src/debug.rs`'s constructor block). Not the same allocators
+    // codegen uses for a program-side literal, which runs on the debuggee
+    // thread itself.
+    "olive_debug_list_new",
+    "olive_debug_obj_new",
+    "olive_debug_obj_set_owned_typed",
+    "olive_debug_struct_alloc",
+    "olive_debug_enum_new",
+    "olive_debug_set_new",
+    "olive_debug_set_add_typed",
     // Rollback for partially-built `setVariable` aggregates (`setvar.rs`):
     // frees a value through its own type descriptor.
     "olive_free_typed",

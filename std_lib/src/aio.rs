@@ -901,7 +901,11 @@ pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
             }
         };
         if let Some(value) = result {
-            let value = copy_future_value(value, result_desc);
+            // The caller's `output` slot is whatever container asked for this
+            // poll, and `gather` writes it into the arena-resident results
+            // list, so the copy belongs beside that list: a task's own arena is
+            // torn down the moment its task completes.
+            let value = copy_future_value_global(value, result_desc);
             unsafe { *(output as *mut i64) = value };
             return 1;
         }
@@ -921,7 +925,7 @@ pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
         }
     };
     if let Some(value) = result {
-        let value = copy_future_value(value, shared.result_desc);
+        let value = copy_future_value_global(value, shared.result_desc);
         unsafe { *(output as *mut i64) = value };
         1
     } else {

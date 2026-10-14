@@ -15,11 +15,12 @@
 //! `encode_value` parses `text` as a real olive expression (`eval.rs`'s
 //! `AExpr`, arithmetic and aggregate literals both) and `build_value` walks
 //! it against the target's static type, allocating fresh heap values with
-//! the same runtime constructors codegen itself uses for a literal
-//! (`olive_list_new`, `olive_obj_new`, `olive_struct_alloc`,
-//! `olive_enum_new`) and filling them with the already-wired element/field
-//! setters. A struct/enum constructor is resolved against
-//! `struct_fields()`/`enum_defs()`, never an arbitrary function call.
+//! the arena-resident counterparts of codegen's literal constructors
+//! (`olive_debug_list_new`, `olive_debug_obj_new`,
+//! `olive_debug_struct_alloc`, `olive_debug_enum_new`) and filling them with
+//! the already-wired element/field setters. A struct/enum constructor is
+//! resolved against `struct_fields()`/`enum_defs()`, never an arbitrary
+//! function call.
 
 use super::engine::EngineShared;
 use super::eval::{self, AExpr, Token, Value};
@@ -350,7 +351,7 @@ fn build_value(
                 let raw = build_value(session, frame_idx, elem_ty, item)?;
                 guard.pending.push((elem_ty.as_ref().clone(), raw));
             }
-            let ptr = call_alloc1(session, "olive_set_new", items.len() as i64)?;
+            let ptr = call_alloc1(session, "olive_debug_set_new", items.len() as i64)?;
             guard.parent = ptr;
             let desc = build_descriptor(session, elem_ty);
             for _ in items {
@@ -376,7 +377,7 @@ fn build_value(
                 let raw = build_value(session, frame_idx, item_ty, item)?;
                 guard.pending.push((item_ty.clone(), raw));
             }
-            let ptr = call_alloc1(session, "olive_list_new", items.len() as i64)?;
+            let ptr = call_alloc1(session, "olive_debug_list_new", items.len() as i64)?;
             guard.parent = ptr;
             for i in 0..items.len() {
                 call_setter(
@@ -402,7 +403,7 @@ fn build_value(
                 let vraw = build_value(session, frame_idx, val_ty, val_expr)?;
                 guard.pending.push((val_ty.as_ref().clone(), vraw));
             }
-            let ptr = call_alloc0(session, "olive_obj_new")?;
+            let ptr = call_alloc0(session, "olive_debug_obj_new")?;
             guard.parent = ptr;
             let key_desc = build_descriptor(session, key_ty);
             let val_desc = build_descriptor(session, val_ty);
@@ -448,7 +449,7 @@ fn build_value(
                 let raw = build_value(session, frame_idx, &fty, arg)?;
                 guard.pending.push((fty, raw));
             }
-            let ptr = call_alloc1(session, "olive_struct_alloc", fields.len() as i64)?;
+            let ptr = call_alloc1(session, "olive_debug_struct_alloc", fields.len() as i64)?;
             guard.parent = ptr;
             for (i, _) in fields.iter().enumerate() {
                 unsafe { *(ptr as *mut i64).add(1 + i) = guard.pending[0].1 };
@@ -491,7 +492,7 @@ fn build_value(
             }
             let ptr = call_alloc4(
                 session,
-                "olive_enum_new",
+                "olive_debug_enum_new",
                 type_id,
                 tag as i64,
                 payload_tys.len() as i64,
@@ -526,7 +527,7 @@ fn build_seq(
         let raw = build_value(session, frame_idx, elem_ty, item)?;
         guard.pending.push((elem_ty.clone(), raw));
     }
-    let ptr = call_alloc1(session, "olive_list_new", items.len() as i64)?;
+    let ptr = call_alloc1(session, "olive_debug_list_new", items.len() as i64)?;
     guard.parent = ptr;
     for (i, _) in items.iter().enumerate() {
         call_setter(
@@ -662,8 +663,8 @@ fn obj_set_owned_typed(
     val_desc: &CString,
 ) -> Result<(), String> {
     let ptr = session
-        .runtime_symbol("olive_obj_set_owned_typed")
-        .ok_or_else(|| "runtime symbol olive_obj_set_owned_typed unavailable".to_string())?;
+        .runtime_symbol("olive_debug_obj_set_owned_typed")
+        .ok_or_else(|| "runtime symbol olive_debug_obj_set_owned_typed unavailable".to_string())?;
     let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
     f(
         obj,
@@ -801,8 +802,8 @@ fn call_set_add_typed(
     if set_ptr == 0 {
         return Err("cannot add an element to a null set".to_string());
     }
-    let Some(ptr) = session.runtime_symbol("olive_set_add_typed") else {
-        return Err("runtime symbol olive_set_add_typed unavailable".to_string());
+    let Some(ptr) = session.runtime_symbol("olive_debug_set_add_typed") else {
+        return Err("runtime symbol olive_debug_set_add_typed unavailable".to_string());
     };
     let f: extern "C" fn(i64, i64, i64) = unsafe { std::mem::transmute(ptr) };
     f(set_ptr, raw, desc.as_ptr() as i64);

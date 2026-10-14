@@ -166,6 +166,8 @@ fn ldconfig_arch_tag() -> &'static str {
 /// `name`, so it never matched. An entry whose tag doesn't list `want_arch`
 /// is for a different word size or architecture and is skipped, since linking
 /// against it would fail anyway.
+#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 fn match_ldconfig_line(line: &str, name: &str, want_arch: &str) -> Option<PathBuf> {
     let (lhs, rhs) = line.trim().split_once(" => ")?;
     let (soname, tag) = match lhs.split_once(" (") {

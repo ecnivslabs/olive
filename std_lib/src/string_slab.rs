@@ -49,6 +49,7 @@ pub(crate) const MAX_LITERAL_LEN: usize = 1 << 28;
 /// run is treated as corrupt rather than walked without end.
 pub(crate) const MAX_FOREIGN_LEN: usize = 1 << 24;
 
+#[cfg(unix)]
 fn page_size() -> usize {
     static PS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *PS.get_or_init(|| unsafe {
@@ -61,21 +62,98 @@ fn page_size() -> usize {
     })
 }
 
+#[cfg(windows)]
+fn page_size() -> usize {
+    static PS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PS.get_or_init(|| unsafe {
+        #[repr(C)]
+        struct SystemInfo {
+            oem_id: u32,
+            page_size: u32,
+            min_app_addr: usize,
+            max_app_addr: usize,
+            active_processor_mask: usize,
+            number_of_processors: u32,
+            processor_type: u32,
+            allocation_granularity: u32,
+            processor_level: u16,
+            processor_revision: u16,
+        }
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetSystemInfo(info: *mut SystemInfo);
+        }
+
+        let mut info = std::mem::zeroed::<SystemInfo>();
+        GetSystemInfo(&mut info);
+        let ps = info.page_size as usize;
+        if ps.is_power_of_two() && ps >= 4096 {
+            ps
+        } else {
+            4096
+        }
+    })
+}
+
 /// Whether the page containing `addr` is mapped readable, probed with
 /// `msync` so an unmapped forged address reports false instead of faulting.
 /// Never dereferences the address itself.
+#[cfg(unix)]
 pub(crate) fn page_mapped(addr: usize) -> bool {
     if addr < 0x1000 {
         return false;
     }
     let ps = page_size();
     let page = addr & !(ps - 1);
+    unsafe { libc::msync(page as *mut libc::c_void, 1, libc::MS_ASYNC) == 0 }
+}
+
+#[cfg(windows)]
+pub(crate) fn page_mapped(addr: usize) -> bool {
+    if addr < 0x1000 {
+        return false;
+    }
+
+    #[repr(C)]
+    struct MemoryBasicInformation {
+        base_address: usize,
+        allocation_base: usize,
+        allocation_protect: u32,
+        partition_id: u16,
+        region_size: usize,
+        state: u32,
+        protect: u32,
+        type_: u32,
+    }
+
+    const MEM_COMMIT: u32 = 0x1000;
+    const PAGE_NOACCESS: u32 = 0x01;
+    const PAGE_GUARD: u32 = 0x100;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn VirtualQuery(
+            address: *const u8,
+            buffer: *mut MemoryBasicInformation,
+            length: usize,
+        ) -> usize;
+    }
+
+    // `VirtualQuery` reports the enclosing region without touching the page,
+    // so a committed, access-permitting region is the Windows equivalent of
+    // the `msync` probe succeeding on unix.
     unsafe {
-        if libc::msync(page as *mut libc::c_void, 1, libc::MS_ASYNC) == 0 {
-            true
-        } else {
-            false
+        let mut info = std::mem::zeroed::<MemoryBasicInformation>();
+        if VirtualQuery(
+            addr as *const u8,
+            &mut info,
+            std::mem::size_of::<MemoryBasicInformation>(),
+        ) == 0
+        {
+            return false;
         }
+        info.state == MEM_COMMIT && info.protect & (PAGE_NOACCESS | PAGE_GUARD) == 0
     }
 }
 
@@ -127,7 +205,12 @@ pub fn owns_str_body(body: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            if (*active).str_slabs.iter().flatten().any(|s| s.owns_addr(addr)) {
+            if (*active)
+                .str_slabs
+                .iter()
+                .flatten()
+                .any(|s| s.owns_addr(addr))
+            {
                 return true;
             }
             let source = crate::slab::SOURCE_SLABS.get();

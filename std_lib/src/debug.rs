@@ -172,13 +172,80 @@ pub extern "C" fn olive_debug_enum_set(val: i64, idx: i64, new: i64) -> i64 {
 /// `setVariable`/`setExpression` write of a `str`-typed slot. Interior nul
 /// bytes are stripped by `olive_str_internal`, same as any other string
 /// construction path.
+///
+/// Every construct below runs inside `with_escape_arena`, and that is not an
+/// optimization: these calls arrive on the *controller* thread (the DAP
+/// request loop), while the value they build is handed to the *debuggee*
+/// thread, which reads it and later frees it from its own arena context. A
+/// slot in the controller thread's own pool is invisible to both: the
+/// debuggee's ownership validation rejects it as a foreign word, and no
+/// debuggee-side free can reclaim it. The process-lifetime arena is the one
+/// place both threads can read, validate, and free the same slot, which is
+/// what `olive_relocate_typed` uses for values crossing a task boundary for
+/// exactly the same reason.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_debug_str_new(bytes: *const u8, len: i64) -> i64 {
     if bytes.is_null() || len < 0 {
-        return crate::string::olive_str_internal("");
+        crate::slab::with_escape_arena(|| crate::string::olive_str_internal(""))
+    } else {
+        let slice = unsafe { std::slice::from_raw_parts(bytes, len as usize) };
+        let text = String::from_utf8_lossy(slice).into_owned();
+        crate::slab::with_escape_arena(|| crate::string::olive_str_internal(&text))
     }
-    let slice = unsafe { std::slice::from_raw_parts(bytes, len as usize) };
-    crate::string::olive_str_internal(&String::from_utf8_lossy(slice))
+}
+
+/// Arena-resident dict for a debugger-built `{...}` literal.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_obj_new() -> i64 {
+    crate::slab::with_escape_arena(|| crate::obj::olive_obj_new())
+}
+
+/// Arena-resident typed dict insert: the key copy a string key needs is
+/// allocated by this call, so it belongs in the arena beside its dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_obj_set_owned_typed(
+    obj_ptr: i64,
+    attr: i64,
+    val: i64,
+    key_desc: i64,
+    val_desc: i64,
+) -> i64 {
+    crate::slab::with_escape_arena(|| {
+        crate::obj::olive_obj_set_owned_typed(obj_ptr, attr, val, key_desc, val_desc)
+    })
+}
+
+/// Arena-resident list, tuple, or vector for a debugger-built literal.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_list_new(capacity: i64) -> i64 {
+    crate::slab::with_escape_arena(|| crate::list::olive_list_new(capacity))
+}
+
+/// Arena-resident set for a debugger-built `{...}` set literal.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_set_new(capacity: i64) -> i64 {
+    crate::slab::with_escape_arena(|| crate::set::olive_set_new(capacity))
+}
+
+/// Arena-resident typed set insert: `add` can copy the element and owns the
+/// word either way, so the copy and the possible release both need the arena.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_set_add_typed(set_ptr: i64, val: i64, key_desc: i64) {
+    crate::slab::with_escape_arena(|| {
+        crate::hash_typed::olive_set_add_typed(set_ptr, val, key_desc)
+    })
+}
+
+/// Arena-resident struct record for a debugger-built `Name(...)` constructor.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_struct_alloc(n_fields: i64) -> i64 {
+    crate::slab::with_escape_arena(|| crate::olive_struct_alloc(n_fields))
+}
+
+/// Arena-resident enum record for a debugger-built `Name.Variant(...)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_enum_new(type_id: i64, tag: i64, arg_count: i64, desc: i64) -> i64 {
+    crate::slab::with_escape_arena(|| crate::olive_enum_new(type_id, tag, arg_count, desc))
 }
 
 /// Decodes a tag-encoded union word for the debugger: writes the payload
@@ -215,14 +282,18 @@ pub extern "C" fn olive_debug_any_decode(val: i64, out: *mut i64) -> i64 {
 /// Encodes a scalar payload into a tag-encoded scalar-union word, the
 /// inverse of `olive_debug_any_decode` for `setVariable` writes. `kind`
 /// follows the same numbering; for kind 3 `payload` is the f64 bit pattern.
+///
+/// Arena-resident for the same reason as `olive_debug_str_new`: a written
+/// union word lives on in the debuggee's frame, which a slot in the
+/// controller thread's pool cannot serve.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_debug_any_encode(kind: i64, payload: i64) -> i64 {
-    match kind {
+    crate::slab::with_escape_arena(|| match kind {
         0 => crate::boxed::olive_box_null(),
         2 => crate::boxed::olive_box_bool(payload),
         3 => crate::boxed::olive_box_float(f64::from_bits(payload as u64)),
         _ => crate::boxed::olive_box_int(payload),
-    }
+    })
 }
 
 /// Raw `extern "C" fn(name_ptr: i64)` / `extern "C" fn()` pair the debugger
