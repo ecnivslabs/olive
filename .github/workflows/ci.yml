@@ -82,8 +82,9 @@ jobs:
         run: python -m pip install --upgrade pip numpy
 
       - name: Install Nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-10-14
           components: rust-src
 
       - name: Run under ASAN
