@@ -3,13 +3,12 @@ use crate::tooling::registry::{
     Dep, NativeArtifact, NativeFile, NativeSpec, PodVersion, validate_pod_coordinates,
 };
 use crate::tooling::target;
-use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::thread;
-use std::time::Duration;
+
+mod registry;
 
 const MAX_ARCHIVE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TAR_BYTES: usize = 512 * 1024 * 1024;
@@ -62,7 +61,9 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
 
     let gh = GhClient::new(token);
 
-    let user_repo = resolve_user_repo()?;
+    let source = registry::resolve_source(&gh, &resolve_user_repo()?)?;
+    let registry = registry::prepare_publish(&gh, name, version, &source)?;
+    let user_repo = &source.repository;
     check_uncommitted_changes();
 
     println!("\x1b[1;32m  Packaging\x1b[0m {}@{}", name, version);
@@ -81,11 +82,11 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
     let cksum = hasher.finalize().to_hex().to_string();
     println!("\x1b[1;32m  Checksum\x1b[0m {}", &cksum[..16]);
 
-    let release_id = create_release(&gh, &user_repo, name, version)?;
-    let dl_url = upload_asset(&gh, &user_repo, release_id, name, archive)?;
+    let release_id = create_release(&gh, user_repo, name, version)?;
+    let dl_url = upload_asset(&gh, user_repo, release_id, name, archive)?;
     println!("\x1b[1;32m  Uploaded\x1b[0m {}", dl_url);
 
-    let native = upload_native_artifacts(&gh, &user_repo, release_id, &manifest)?;
+    let native = upload_native_artifacts(&gh, user_repo, release_id, &manifest)?;
 
     push_git_ref_and_tag(name, version);
 
@@ -110,7 +111,7 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
         native,
     };
 
-    let pr_url = create_registry_pr(&gh, &pod)?;
+    let pr_url = registry::create_registry_pr(&gh, &pod, &source, &registry)?;
     println!(
         "\x1b[1;32m  Published\x1b[0m {}@{} ; registry PR: {}",
         name, version, pr_url
@@ -172,14 +173,10 @@ fn resolve_user_repo() -> Result<String, String> {
 
 fn parse_github_repo(url: &str) -> Option<String> {
     let url = url.trim().trim_end_matches(".git");
-
-    if let Some(rest) = url.strip_prefix("https://github.com/") {
-        return Some(rest.to_string());
-    }
-    if let Some(rest) = url.strip_prefix("git@github.com:") {
-        return Some(rest.to_string());
-    }
-    None
+    let repository = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("git@github.com:"))?;
+    registry::valid_repository_name(repository).then(|| repository.to_string())
 }
 
 fn git_origin_url() -> Option<String> {
@@ -638,218 +635,6 @@ fn upload_named_asset(
         .ok_or_else(|| format!("upload failed: {}", resp))
 }
 
-/// Appends a registry line, replacing any existing line for the same
-/// `name@vers` so re-publishing a version (for example with a wider native
-/// matrix) never leaves duplicate entries. The resolver prefers the newest
-/// line, so the latest publish always wins.
-fn merge_registry_line(current: &str, name: &str, vers: &str, new_line: &str) -> String {
-    let kept: Vec<&str> = current
-        .lines()
-        .filter(|l| {
-            if l.trim().is_empty() {
-                return false;
-            }
-            match serde_json::from_str::<serde_json::Value>(l) {
-                Ok(v) => !(v["name"].as_str() == Some(name) && v["vers"].as_str() == Some(vers)),
-                Err(_) => true,
-            }
-        })
-        .collect();
-    if kept.is_empty() {
-        new_line.to_string()
-    } else {
-        format!("{}\n{}", kept.join("\n"), new_line)
-    }
-}
-
-fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
-    let fork_repo = format!("{}/pit-registry", user);
-
-    if gh
-        .get(&format!("https://api.github.com/repos/{}", fork_repo))
-        .send()
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
-    {
-        return Ok(fork_repo);
-    }
-
-    println!(
-        "\x1b[1;32m    Forking\x1b[0m {} → {}",
-        REGISTRY_REPO, fork_repo
-    );
-
-    gh.post(&format!(
-        "https://api.github.com/repos/{}/forks",
-        REGISTRY_REPO
-    ))
-    .send()
-    .map_err(|e| format!("fork failed: {}", e))?;
-
-    for _ in 0..15 {
-        thread::sleep(Duration::from_secs(2));
-        if gh
-            .get(&format!("https://api.github.com/repos/{}", fork_repo))
-            .send()
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
-        {
-            return Ok(fork_repo);
-        }
-    }
-
-    Err(format!(
-        "fork not ready after 30s; check https://github.com/{} and retry",
-        fork_repo
-    ))
-}
-
-fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String> {
-    let user = get_current_user(gh)?;
-    let fork_repo = ensure_fork(gh, &user)?;
-
-    let prefix = pod.name.chars().take(2).collect::<String>();
-    let file_path = format!("{}/{}", prefix, pod.name);
-    let branch = format!("add-{}-{}", pod.name, pod.vers);
-
-    // Find out what the fork's default branch is called (could be master or main).
-    let fork_default_branch = gh
-        .get(&format!("https://api.github.com/repos/{}", fork_repo))
-        .send()
-        .ok()
-        .and_then(|r| r.json::<Value>().ok())
-        .and_then(|v| v["default_branch"].as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "master".to_string());
-
-    // Sync fork with upstream first so we get the latest registry state.
-    let _ = gh
-        .post(&format!(
-            "https://api.github.com/repos/{}/merge-upstream",
-            fork_repo
-        ))
-        .json(&json!({ "branch": fork_default_branch }))
-        .send();
-
-    // Retry up to 20s: a freshly created fork can take a moment to populate.
-    let base_sha = {
-        let mut sha: Option<String> = None;
-        for _ in 0..10 {
-            if let Ok(resp) = gh
-                .get(&format!(
-                    "https://api.github.com/repos/{}/branches/{}",
-                    fork_repo, fork_default_branch
-                ))
-                .send()
-                && let Ok(val) = resp.json::<Value>()
-                && let Some(s) = val["commit"]["sha"].as_str()
-            {
-                sha = Some(s.to_string());
-                break;
-            }
-            thread::sleep(Duration::from_secs(2));
-        }
-        sha.ok_or(
-            "could not get fork main SHA (fork may still be initializing, try again in a moment)",
-        )?
-    };
-
-    let (current_sha_on_fork, current_content) = match gh
-        .get(&format!(
-            "https://api.github.com/repos/{}/contents/{}",
-            fork_repo, file_path
-        ))
-        .send()
-    {
-        Ok(resp) => {
-            if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                (None, String::new())
-            } else {
-                let val: Value = resp.json().map_err(|e| e.to_string())?;
-                let sha = val["sha"].as_str().unwrap_or("").to_string();
-                let content = val["content"]
-                    .as_str()
-                    .map(|c| {
-                        let cleaned = c.replace('\n', "");
-                        String::from_utf8(B64.decode(cleaned).unwrap_or_default())
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_default();
-                (Some(sha), content)
-            }
-        }
-        Err(e) => return Err(format!("registry read failed: {}", e)),
-    };
-
-    let new_line = serde_json::to_string(pod).map_err(|e| e.to_string())?;
-    let new_content = merge_registry_line(&current_content, &pod.name, &pod.vers, &new_line);
-
-    // Re-publishing the same version recreates its branch so the run stays
-    // idempotent (a wider native matrix is just another publish).
-    let ref_url = format!(
-        "https://api.github.com/repos/{}/git/refs/heads/{}",
-        fork_repo, branch
-    );
-    let _ = gh
-        .client
-        .delete(&ref_url)
-        .header("Authorization", format!("token {}", gh.token))
-        .header("User-Agent", "pit/0.1.0")
-        .send();
-    gh.post(&format!(
-        "https://api.github.com/repos/{}/git/refs",
-        fork_repo
-    ))
-    .json(&json!({
-        "ref": format!("refs/heads/{}", branch),
-        "sha": base_sha,
-    }))
-    .send()
-    .map_err(|e| format!("create branch failed: {}", e))?;
-
-    let fork_file_url = format!(
-        "https://api.github.com/repos/{}/contents/{}",
-        fork_repo, file_path
-    );
-    let encoded = B64.encode(new_content.as_bytes());
-    let mut update_body = json!({
-        "message": format!("add {}@{}", pod.name, pod.vers),
-        "content": encoded,
-        "branch": branch,
-    });
-    if let Some(sha) = current_sha_on_fork {
-        update_body["sha"] = json!(sha);
-    }
-
-    gh.put(&fork_file_url)
-        .json(&update_body)
-        .send()
-        .map_err(|e| format!("registry update failed: {}", e))?;
-
-    let pr_resp: Value = gh
-        .post(&format!(
-            "https://api.github.com/repos/{}/pulls",
-            REGISTRY_REPO
-        ))
-        .json(&json!({
-            "title": format!("Add {}@{}", pod.name, pod.vers),
-            "body": format!(
-                "New pod: **{}** version `{}`\n\nPublished via `pit publish`.",
-                pod.name, pod.vers
-            ),
-            "head": format!("{}:{}", user, branch),
-            "base": fork_default_branch,
-        }))
-        .send()
-        .map_err(|e| format!("create PR failed: {}", e))?
-        .json()
-        .map_err(|e| e.to_string())?;
-
-    pr_resp["html_url"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("PR created but no URL in response: {}", pr_resp))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,32 +803,5 @@ mod tests {
         std::env::set_current_dir(cwd).unwrap();
         assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn merge_registry_line_replaces_same_version() {
-        let current = "{\"name\":\"tok\",\"vers\":\"0.3.0\",\"cksum\":\"old\"}\n{\"name\":\"tok\",\"vers\":\"0.2.0\",\"cksum\":\"x\"}";
-        let merged = merge_registry_line(
-            current,
-            "tok",
-            "0.3.0",
-            "{\"name\":\"tok\",\"vers\":\"0.3.0\",\"cksum\":\"new\"}",
-        );
-        assert_eq!(merged.matches("\"vers\":\"0.3.0\"").count(), 1);
-        assert!(merged.contains("\"cksum\":\"new\""));
-        assert!(merged.contains("\"vers\":\"0.2.0\""));
-    }
-
-    #[test]
-    fn merge_registry_line_appends_new_version() {
-        let current = "{\"name\":\"tok\",\"vers\":\"0.2.0\",\"cksum\":\"x\"}";
-        let merged = merge_registry_line(
-            current,
-            "tok",
-            "0.3.0",
-            "{\"name\":\"tok\",\"vers\":\"0.3.0\",\"cksum\":\"new\"}",
-        );
-        assert!(merged.contains("\"vers\":\"0.2.0\""));
-        assert!(merged.contains("\"vers\":\"0.3.0\""));
     }
 }
